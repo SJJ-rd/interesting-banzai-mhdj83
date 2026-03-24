@@ -12,6 +12,15 @@ const checkIntersect = (p1, p2, p3, p4, isTrimMode = false) => {
 };
 
 const CncWorkspace = () => {
+  // 🔥 新增：偵測是否為行動裝置
+  const [isMobile, setIsMobile] = useState(window.innerWidth < 768);
+
+  useEffect(() => {
+    const handleResize = () => setIsMobile(window.innerWidth < 768);
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
+  }, []);
+
   const [mode, setMode] = useState("DRAW_LINE");
   const [lineMode, setLineMode] = useState("G01");
   const [arcSubMode, setArcSubMode] = useState("SER");
@@ -50,8 +59,8 @@ const CncWorkspace = () => {
 
   const canvasRef = useRef(null);
   const cameraRef = useRef({
-    x: window.innerWidth / 2 - 150,
-    y: window.innerHeight / 2,
+    x: window.innerWidth / 2 - (isMobile ? 0 : 150),
+    y: window.innerHeight / (isMobile ? 4 : 2), // 手機版初始位置微調
     zoom: 1.5,
   });
 
@@ -157,7 +166,6 @@ const CncWorkspace = () => {
     });
   };
 
-  // --- 幾何計算引擎 ---
   const getVisualPoints = (pts) => {
     if (!pts || !Array.isArray(pts)) return [];
     if (pts.length < 2) return pts.map((p) => ({ ...p }));
@@ -481,7 +489,7 @@ const CncWorkspace = () => {
       });
     });
 
-    const padding = 60;
+    const padding = isMobile ? 30 : 60;
     const boxWidth = maxX - minX || 1;
     const boxHeight = maxY - minY || 1;
 
@@ -523,9 +531,15 @@ const CncWorkspace = () => {
     });
     g += `N20 G01 X${isInner ? stock.id - 2 : stock.od + 2}\nM30`;
     setGcode(g);
+    
+    // 如果在手機版，產生 G-Code 後自動捲動到最下面
+    if (isMobile) {
+      setTimeout(() => {
+        window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
+      }, 100);
+    }
   };
 
-  // 🔥 升級版：完整的加工切層模擬
   const startSimulation = () => {
     if (interactionRef.current.sim.active) {
       interactionRef.current.sim.active = false;
@@ -540,15 +554,13 @@ const CncWorkspace = () => {
     let sPts = [];
     const activeCompPts = camCompPts;
 
-    // 1. 將所有圓弧「打平」成微小線段，以便進行極度精確的水平碰撞偵測
     let flatPts = [];
     for (let i = 0; i < activeCompPts.length; i++) {
       let pt = activeCompPts[i];
       if (pt.type === "arc" && i > 0) {
-        let steps = 15; // 圓弧切割的精細度
+        let steps = 15; 
         let aStart = pt.startAngle;
         let aEnd = pt.endAngle;
-        // 確保角度順著繪圖方向
         if (pt.drawCCW && aStart > aEnd) aEnd += 2 * Math.PI;
         if (!pt.drawCCW && aStart < aEnd) aStart += 2 * Math.PI;
 
@@ -565,9 +577,8 @@ const CncWorkspace = () => {
       }
     }
 
-    // 計算安全距離與毛胚邊界
     const safeZ = Math.max(...flatPts.map((p) => p.x)) + cam.safeDist;
-    const minZ = Math.min(...flatPts.map((p) => p.x)); // 整個圖形的最左側極限
+    const minZ = Math.min(...flatPts.map((p) => p.x)); 
     const startDia = isInner ? stock.id : stock.od;
     const safeY = -(startDia + (isInner ? -cam.safeDist * 2 : cam.safeDist * 2)) / 2;
     const startY = -startDia / 2;
@@ -582,7 +593,6 @@ const CncWorkspace = () => {
     let passes = 0;
     const maxPasses = 300;
 
-    // 2. 粗車循環 (G71 風格)
     while (
       (isInner ? currentY < targetY : currentY > targetY) &&
       passes < maxPasses
@@ -611,30 +621,24 @@ const CncWorkspace = () => {
         }
       }
 
-      // 找出最右側的碰撞點（模擬第一把接觸到的邊界）
-      let endZ = minZ; // 預設切到最左側極限 (例如在切大毛胚皮的時候)
+      let endZ = minZ; 
       if (intersectZs.length > 0) {
         endZ = Math.max(...intersectZs);
       }
 
-      // 如果有需要切除的實體才進行此層的切削
       if (endZ < safeZ) {
-        sPts.push({ x: safeZ, y: currentY, type: "G00" }); // 快移至下刀點
-        sPts.push({ x: endZ, y: currentY, type: "G01" });  // 直線切削
-        
-        // 45度角退刀
+        sPts.push({ x: safeZ, y: currentY, type: "G00" }); 
+        sPts.push({ x: endZ, y: currentY, type: "G01" });  
         const retractDir = isInner ? -0.5 : 0.5;
         sPts.push({ x: endZ + 0.5, y: currentY + retractDir, type: "G01" });
-        sPts.push({ x: safeZ, y: currentY + retractDir, type: "G00" }); // 快速退回安全點
+        sPts.push({ x: safeZ, y: currentY + retractDir, type: "G00" }); 
       }
       passes++;
     }
 
-    // 3. 精車循環 (Profile Pass)
     sPts.push({ x: safeZ, y: activeCompPts[0].y, type: "G00" });
     activeCompPts.forEach((pt) => sPts.push({ ...pt, type: pt.type || "G01" }));
     
-    // 結尾退刀
     const lastPt = activeCompPts[activeCompPts.length - 1];
     sPts.push({ 
       x: lastPt.x + 1, 
@@ -644,6 +648,11 @@ const CncWorkspace = () => {
     sPts.push({ x: safeZ, y: safeY, type: "G00" });
 
     interactionRef.current.sim = { active: true, progress: 0, pts: sPts };
+    
+    // 如果在手機版，啟動模擬時捲動回畫布區
+    if (isMobile) {
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
   };
 
   // --- 畫布渲染 ---
@@ -925,7 +934,7 @@ const CncWorkspace = () => {
 
       if (interactionRef.current.sim.active) {
         let sim = interactionRef.current.sim;
-        sim.progress += 0.4; // 🔥 加速模擬播放速度
+        sim.progress += 0.4; 
         if (sim.progress >= sim.pts.length - 1) {
           sim.progress = sim.pts.length - 1;
           sim.active = false;
@@ -1023,11 +1032,12 @@ const CncWorkspace = () => {
     arcSubMode,
     toolConfig,
     isInner,
+    isMobile // 🔥 加入 isMobile 依賴
   ]);
 
-  // --- 事件處理 ---
-  const handleMouseDown = (e) => {
-    if (e.button === 2) {
+  // --- 滑鼠與觸控事件處理 (整合版) ---
+  const handlePointerDown = (clientX, clientY, button = 0) => {
+    if (button === 2) {
       interactionRef.current.continuous = false;
       interactionRef.current.circleStart = null;
       interactionRef.current.arcPts = [];
@@ -1036,13 +1046,13 @@ const CncWorkspace = () => {
     }
     const rect = canvasRef.current.getBoundingClientRect();
     const rawPt = {
-      x: (e.clientX - rect.left - cameraRef.current.x) / cameraRef.current.zoom,
-      y: (e.clientY - rect.top - cameraRef.current.y) / cameraRef.current.zoom,
+      x: (clientX - rect.left - cameraRef.current.x) / cameraRef.current.zoom,
+      y: (clientY - rect.top - cameraRef.current.y) / cameraRef.current.zoom,
     };
 
     let snapPt = rawPt;
     let isSnapped = false;
-    if (Math.hypot(rawPt.x, rawPt.y) < 12 / cameraRef.current.zoom) {
+    if (Math.hypot(rawPt.x, rawPt.y) < (isMobile ? 20 : 12) / cameraRef.current.zoom) { // 手機版吸附範圍加大
       snapPt = { x: 0, y: 0 };
       isSnapped = true;
     }
@@ -1052,7 +1062,7 @@ const CncWorkspace = () => {
           if (
             pt &&
             Math.hypot(rawPt.x - pt.x, rawPt.y - pt.y) <
-              12 / cameraRef.current.zoom
+              (isMobile ? 20 : 12) / cameraRef.current.zoom
           ) {
             snapPt = pt;
             isSnapped = true;
@@ -1107,7 +1117,7 @@ const CncWorkspace = () => {
 
     if (mode === "PAN") {
       interactionRef.current.isDragging = true;
-      interactionRef.current.lastMouse = { x: e.clientX, y: e.clientY };
+      interactionRef.current.lastMouse = { x: clientX, y: clientY };
     } else if (mode === "SELECT") {
       const hId = interactionRef.current.hoveredPathId;
       const hIdx = interactionRef.current.hoveredPtIdx;
@@ -1244,16 +1254,16 @@ const CncWorkspace = () => {
     }
   };
 
-  const handleMouseMove = (e) => {
+  const handlePointerMove = (clientX, clientY) => {
     const rect = canvasRef.current.getBoundingClientRect();
     const rawPt = {
-      x: (e.clientX - rect.left - cameraRef.current.x) / cameraRef.current.zoom,
-      y: (e.clientY - rect.top - cameraRef.current.y) / cameraRef.current.zoom,
+      x: (clientX - rect.left - cameraRef.current.x) / cameraRef.current.zoom,
+      y: (clientY - rect.top - cameraRef.current.y) / cameraRef.current.zoom,
     };
 
     let snapPt = rawPt;
     let isSnapped = false;
-    if (Math.hypot(rawPt.x, rawPt.y) < 12 / cameraRef.current.zoom) {
+    if (Math.hypot(rawPt.x, rawPt.y) < (isMobile ? 20 : 12) / cameraRef.current.zoom) {
       snapPt = { x: 0, y: 0 };
       isSnapped = true;
     }
@@ -1263,7 +1273,7 @@ const CncWorkspace = () => {
           if (
             pt &&
             Math.hypot(rawPt.x - pt.x, rawPt.y - pt.y) <
-              12 / cameraRef.current.zoom
+              (isMobile ? 20 : 12) / cameraRef.current.zoom
           ) {
             snapPt = pt;
             isSnapped = true;
@@ -1275,7 +1285,7 @@ const CncWorkspace = () => {
     interactionRef.current.isSnapped = isSnapped;
 
     if (mode === "SELECT") {
-      let minD = 20 / cameraRef.current.zoom,
+      let minD = (isMobile ? 30 : 20) / cameraRef.current.zoom,
         foundId = null,
         foundPtIdx = null;
       paths.forEach((p) => {
@@ -1297,16 +1307,14 @@ const CncWorkspace = () => {
     }
 
     if (mode === "CHAMFER") {
-      let minD = 20 / cameraRef.current.zoom,
+      let minD = (isMobile ? 30 : 20) / cameraRef.current.zoom,
         found = null;
       paths.forEach((p, pIdx) => {
         if (!p.points) return;
-        
         const isClosed = p.points.length > 2 && Math.hypot(p.points[0].x - p.points[p.points.length-1].x, p.points[0].y - p.points[p.points.length-1].y) < 0.001;
         
         for (let i = 0; i < p.points.length; i++) {
           if (!isClosed && (i === 0 || i === p.points.length - 1)) continue;
-          
           const pt = p.points[i];
           if (pt && Math.hypot(rawPt.x - pt.x, rawPt.y - pt.y) < minD) {
             minD = Math.hypot(rawPt.x - pt.x, rawPt.y - pt.y);
@@ -1321,16 +1329,16 @@ const CncWorkspace = () => {
 
     if (interactionRef.current.isDragging) {
       if (mode === "PAN") {
-        cameraRef.current.x += e.clientX - interactionRef.current.lastMouse.x;
-        cameraRef.current.y += e.clientY - interactionRef.current.lastMouse.y;
-        interactionRef.current.lastMouse = { x: e.clientX, y: e.clientY };
+        cameraRef.current.x += clientX - interactionRef.current.lastMouse.x;
+        cameraRef.current.y += clientY - interactionRef.current.lastMouse.y;
+        interactionRef.current.lastMouse = { x: clientX, y: clientY };
       } else if (mode === "TRIM") {
         interactionRef.current.trimPath.push(rawPt);
       }
     }
   };
 
-  const handleMouseUp = () => {
+  const handlePointerUp = () => {
     if (mode === "TRIM" && interactionRef.current.trimPath.length > 1) {
       saveState();
       const tPath = interactionRef.current.trimPath;
@@ -1428,14 +1436,20 @@ const CncWorkspace = () => {
     <div
       style={{
         display: "flex",
+        flexDirection: isMobile ? "column" : "row", // 🔥 手機版改為上下排列
         width: "100vw",
         height: "100vh",
         backgroundColor: "#1e1e1e",
         color: "white",
-        overflow: "hidden",
+        overflow: isMobile ? "auto" : "hidden",
       }}
     >
-      <div style={{ flexGrow: 1, position: "relative" }}>
+      <div style={{ 
+        flexGrow: 1, 
+        position: "relative",
+        height: isMobile ? "55vh" : "100vh", // 🔥 手機版畫布佔 55% 高度
+        minHeight: isMobile ? "350px" : "auto" 
+      }}>
         <canvas
           ref={canvasRef}
           style={{
@@ -1443,387 +1457,104 @@ const CncWorkspace = () => {
             width: "100%",
             height: "100%",
             cursor: "none",
+            touchAction: "none", // 🔥 防止手機滑動時畫面跟著捲動
           }}
-          onMouseDown={handleMouseDown}
-          onMouseMove={handleMouseMove}
-          onMouseUp={handleMouseUp}
+          onMouseDown={(e) => handlePointerDown(e.clientX, e.clientY, e.button)}
+          onMouseMove={(e) => handlePointerMove(e.clientX, e.clientY)}
+          onMouseUp={handlePointerUp}
+          onMouseLeave={handlePointerUp}
+          onTouchStart={(e) => {
+            if (e.touches.length === 1) {
+              const touch = e.touches[0];
+              handlePointerDown(touch.clientX, touch.clientY, 0);
+            }
+          }}
+          onTouchMove={(e) => {
+            if (e.touches.length === 1) {
+              const touch = e.touches[0];
+              handlePointerMove(touch.clientX, touch.clientY);
+            }
+          }}
+          onTouchEnd={handlePointerUp}
           onWheel={(e) => {
             const z = e.deltaY > 0 ? 0.85 : 1.15;
-            cameraRef.current.zoom = Math.max(
-              0.01,
-              Math.min(cameraRef.current.zoom * z, 150)
-            );
+            cameraRef.current.zoom = Math.max(0.01, Math.min(cameraRef.current.zoom * z, 150));
           }}
           onContextMenu={(e) => e.preventDefault()}
         />
 
+        {/* 🔥 行動裝置友善的工具列 */}
         <div
           style={{
             position: "absolute",
-            top: 10,
-            left: 10,
+            top: 5,
+            left: 5,
             display: "flex",
-            gap: "5px",
-            background: "rgba(0,0,0,0.7)",
-            padding: "10px",
+            gap: "4px",
+            background: "rgba(0,0,0,0.8)",
+            padding: "8px",
             borderRadius: "8px",
             flexWrap: "wrap",
-            maxWidth: "85%",
+            maxWidth: isMobile ? "95%" : "85%",
+            maxHeight: isMobile ? "150px" : "auto",
+            overflowY: "auto",
           }}
         >
-          <button
-            onClick={handleUndo}
-            style={{
-              background: "#ff9800",
-              border: "none",
-              padding: "6px 12px",
-              borderRadius: "4px",
-              fontWeight: "bold",
-              cursor: "pointer",
-            }}
-          >
-            ↩ 復原 (Ctrl+Z)
+          <button onClick={handleUndo} style={{ background: "#ff9800", border: "none", padding: "6px 10px", borderRadius: "4px", fontWeight: "bold", cursor: "pointer", fontSize: isMobile ? "11px" : "13px" }}>
+            ↩ 復原
           </button>
 
-          <div
-            style={{
-              display: "flex",
-              gap: "2px",
-              background: "#333",
-              padding: "2px",
-              borderRadius: "4px",
-            }}
-          >
-            <button
-              onClick={() => setMode("SELECT")}
-              style={{
-                background: mode === "SELECT" ? "#0dcaf0" : "#444",
-                color: mode === "SELECT" ? "#000" : "#fff",
-                border: "none",
-                padding: "6px 12px",
-                borderRadius: "4px",
-                cursor: "pointer",
-              }}
-            >
-              👆 選取
-            </button>
-            <button
-              onClick={() => setMode("PAN")}
-              style={{
-                background: mode === "PAN" ? "#007bff" : "#444",
-                color: "#fff",
-                border: "none",
-                padding: "6px 12px",
-                borderRadius: "4px",
-                cursor: "pointer",
-              }}
-            >
-              ✋ 平移
-            </button>
-          </div>
-          
-          {mode === "SELECT" && (
-            <span style={{ color: "#ffeb3b", fontSize: "12px", alignSelf: "center", marginLeft: "5px" }}>
-               💡 點擊兩端點定義範圍，點空白處取消
-            </span>
-          )}
-
-          <div
-            style={{
-              display: "flex",
-              gap: "2px",
-              background: "#333",
-              padding: "2px",
-              borderRadius: "4px",
-            }}
-          >
-            <button
-              onClick={() => {
-                setMode("DRAW_LINE");
-                setLineMode("G01");
-              }}
-              style={{
-                background:
-                  mode === "DRAW_LINE" && lineMode === "G01"
-                    ? "#28a745"
-                    : "#444",
-                color: "#fff",
-                border: "none",
-                padding: "6px 12px",
-                borderRadius: "4px",
-                cursor: "pointer",
-              }}
-            >
-              ✏️ 直線(G01)
-            </button>
-            <button
-              onClick={() => {
-                setMode("DRAW_LINE");
-                setLineMode("G00");
-              }}
-              style={{
-                background:
-                  mode === "DRAW_LINE" && lineMode === "G00"
-                    ? "#dc3545"
-                    : "#444",
-                color: "#fff",
-                border: "none",
-                padding: "6px 12px",
-                borderRadius: "4px",
-                cursor: "pointer",
-              }}
-            >
-              🚀 快移(G00)
-            </button>
+          <div style={{ display: "flex", gap: "2px", background: "#333", padding: "2px", borderRadius: "4px" }}>
+            <button onClick={() => setMode("SELECT")} style={{ background: mode === "SELECT" ? "#0dcaf0" : "#444", color: mode === "SELECT" ? "#000" : "#fff", border: "none", padding: "6px 10px", borderRadius: "4px", cursor: "pointer", fontSize: isMobile ? "11px" : "13px" }}>👆</button>
+            <button onClick={() => setMode("PAN")} style={{ background: mode === "PAN" ? "#007bff" : "#444", color: "#fff", border: "none", padding: "6px 10px", borderRadius: "4px", cursor: "pointer", fontSize: isMobile ? "11px" : "13px" }}>✋</button>
           </div>
 
-          <button
-            onClick={() => {
-              interactionRef.current.continuous = false;
-              interactionRef.current.arcPts = [];
-              setPaths((p) => [...p]);
-            }}
-            style={{
-              background: "#e83e8c",
-              color: "#fff",
-              border: "none",
-              padding: "6px 12px",
-              borderRadius: "4px",
-              cursor: "pointer",
-              fontWeight: "bold",
-            }}
-          >
-            🏁 斷開(Esc)
+          <div style={{ display: "flex", gap: "2px", background: "#333", padding: "2px", borderRadius: "4px" }}>
+            <button onClick={() => { setMode("DRAW_LINE"); setLineMode("G01"); }} style={{ background: mode === "DRAW_LINE" && lineMode === "G01" ? "#28a745" : "#444", color: "#fff", border: "none", padding: "6px 10px", borderRadius: "4px", cursor: "pointer", fontSize: isMobile ? "11px" : "13px" }}>✏️ G01</button>
+            <button onClick={() => { setMode("DRAW_LINE"); setLineMode("G00"); }} style={{ background: mode === "DRAW_LINE" && lineMode === "G00" ? "#dc3545" : "#444", color: "#fff", border: "none", padding: "6px 10px", borderRadius: "4px", cursor: "pointer", fontSize: isMobile ? "11px" : "13px" }}>🚀 G00</button>
+          </div>
+
+          <button onClick={() => { interactionRef.current.continuous = false; interactionRef.current.arcPts = []; setPaths((p) => [...p]); }} style={{ background: "#e83e8c", color: "#fff", border: "none", padding: "6px 10px", borderRadius: "4px", cursor: "pointer", fontWeight: "bold", fontSize: isMobile ? "11px" : "13px" }}>
+            🏁 斷開
           </button>
 
-          <div
-            style={{
-              display: "flex",
-              gap: "2px",
-              background: "#333",
-              padding: "2px",
-              borderRadius: "4px",
-            }}
-          >
-            <button
-              onClick={() => {
-                setMode("DRAW_ARC");
-                setArcSubMode("SCE");
-                interactionRef.current.arcPts = [];
-              }}
-              style={{
-                background:
-                  mode === "DRAW_ARC" && arcSubMode === "SCE"
-                    ? "#e83e8c"
-                    : "#444",
-                color: "#fff",
-                border: "none",
-                padding: "6px",
-                fontSize: "11px",
-                cursor: "pointer",
-              }}
-            >
-              弧:起中端
-            </button>
-            <button
-              onClick={() => {
-                setMode("DRAW_ARC");
-                setArcSubMode("SER");
-                interactionRef.current.arcPts = [];
-              }}
-              style={{
-                background:
-                  mode === "DRAW_ARC" && arcSubMode === "SER"
-                    ? "#e83e8c"
-                    : "#444",
-                color: "#fff",
-                border: "none",
-                padding: "6px",
-                fontSize: "11px",
-                cursor: "pointer",
-              }}
-            >
-              弧:起端半
-            </button>
+          <div style={{ display: "flex", gap: "2px", background: "#333", padding: "2px", borderRadius: "4px" }}>
+            <button onClick={() => { setMode("DRAW_ARC"); setArcSubMode("SCE"); interactionRef.current.arcPts = []; }} style={{ background: mode === "DRAW_ARC" && arcSubMode === "SCE" ? "#e83e8c" : "#444", color: "#fff", border: "none", padding: "6px", fontSize: "11px", cursor: "pointer" }}>弧:起中端</button>
+            <button onClick={() => { setMode("DRAW_ARC"); setArcSubMode("SER"); interactionRef.current.arcPts = []; }} style={{ background: mode === "DRAW_ARC" && arcSubMode === "SER" ? "#e83e8c" : "#444", color: "#fff", border: "none", padding: "6px", fontSize: "11px", cursor: "pointer" }}>弧:起端半</button>
           </div>
 
-          <div
-            style={{
-              display: "flex",
-              gap: "2px",
-              background: "#333",
-              padding: "2px",
-              borderRadius: "4px",
-            }}
-          >
-            <button
-              onClick={() => {
-                setMode("DRAW_CIRCLE");
-                setCircleSubMode("CEN");
-                interactionRef.current.circleStart = null;
-              }}
-              style={{
-                background:
-                  mode === "DRAW_CIRCLE" && circleSubMode === "CEN"
-                    ? "#e83e8c"
-                    : "#444",
-                color: "#fff",
-                border: "none",
-                padding: "6px 10px",
-                borderRadius: "4px",
-                cursor: "pointer",
-              }}
-            >
-              🔴 圓:中心
-            </button>
-            <button
-              onClick={() => {
-                setMode("DRAW_CIRCLE");
-                setCircleSubMode("TAN");
-                interactionRef.current.tangentCircle = null;
-              }}
-              style={{
-                background:
-                  mode === "DRAW_CIRCLE" && circleSubMode === "TAN"
-                    ? "#e83e8c"
-                    : "#444",
-                color: "#fff",
-                border: "none",
-                padding: "6px 10px",
-                borderRadius: "4px",
-                cursor: "pointer",
-              }}
-            >
-              🔴 圓:相切
-            </button>
+          <div style={{ display: "flex", gap: "2px", background: "#333", padding: "2px", borderRadius: "4px" }}>
+            <button onClick={() => { setMode("DRAW_CIRCLE"); setCircleSubMode("CEN"); interactionRef.current.circleStart = null; }} style={{ background: mode === "DRAW_CIRCLE" && circleSubMode === "CEN" ? "#e83e8c" : "#444", color: "#fff", border: "none", padding: "6px", fontSize: "11px", cursor: "pointer" }}>🔴圓</button>
           </div>
 
-          <button
-            onClick={() => setMode("TRIM")}
-            style={{
-              background: mode === "TRIM" ? "#ff4444" : "#444",
-              color: "#fff",
-              border: "none",
-              padding: "6px 12px",
-              borderRadius: "4px",
-              cursor: "pointer",
-            }}
-          >
-            ✂️ 修剪
+          <button onClick={() => setMode("TRIM")} style={{ background: mode === "TRIM" ? "#ff4444" : "#444", color: "#fff", border: "none", padding: "6px 10px", borderRadius: "4px", cursor: "pointer", fontSize: isMobile ? "11px" : "13px" }}>
+            ✂️
           </button>
 
-          <div
-            style={{
-              display: "flex",
-              gap: "2px",
-              background: "#333",
-              padding: "2px",
-              borderRadius: "4px",
-            }}
-          >
-            <button
-              onClick={() => setMode("CHAMFER")}
-              style={{
-                background: mode === "CHAMFER" ? "#ffeb3b" : "#444",
-                color: mode === "CHAMFER" ? "#000" : "#fff",
-                border: "none",
-                padding: "6px 12px",
-                borderRadius: "4px",
-                cursor: "pointer",
-                fontWeight: "bold",
-              }}
-            >
-              🔨 倒角
-            </button>
+          <div style={{ display: "flex", gap: "2px", background: "#333", padding: "2px", borderRadius: "4px" }}>
+            <button onClick={() => setMode("CHAMFER")} style={{ background: mode === "CHAMFER" ? "#ffeb3b" : "#444", color: mode === "CHAMFER" ? "#000" : "#fff", border: "none", padding: "6px 10px", borderRadius: "4px", cursor: "pointer", fontWeight: "bold", fontSize: isMobile ? "11px" : "13px" }}>🔨 倒角</button>
             {mode === "CHAMFER" && (
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: "5px",
-                  padding: "0 5px",
-                }}
-              >
-                <select
-                  value={chamferType}
-                  onChange={(e) => setChamferType(e.target.value)}
-                  style={{
-                    background: "#111",
-                    color: "#fff",
-                    border: "none",
-                    padding: "4px",
-                    fontSize: "11px",
-                  }}
-                >
-                  <option value="c">C角</option>
-                  <option value="r">R角</option>
+              <div style={{ display: "flex", alignItems: "center", gap: "2px" }}>
+                <select value={chamferType} onChange={(e) => setChamferType(e.target.value)} style={{ background: "#111", color: "#fff", border: "none", padding: "4px", fontSize: "11px" }}>
+                  <option value="c">C</option>
+                  <option value="r">R</option>
                 </select>
-                <input
-                  type="number"
-                  step="0.1"
-                  value={chamferVal}
-                  onChange={(e) => setChamferVal(Number(e.target.value))}
-                  style={{
-                    width: "40px",
-                    background: "#111",
-                    color: "#fff",
-                    border: "none",
-                    padding: "4px",
-                  }}
-                />
+                <input type="number" step="0.1" value={chamferVal} onChange={(e) => setChamferVal(Number(e.target.value))} style={{ width: "35px", background: "#111", color: "#fff", border: "none", padding: "4px", fontSize: "11px" }} />
               </div>
             )}
           </div>
           
-          <button
-            onClick={handleZoomToFit}
-            style={{
-              background: "#17a2b8",
-              color: "#fff",
-              border: "none",
-              padding: "6px 12px",
-              borderRadius: "4px",
-              cursor: "pointer",
-              fontWeight: "bold",
-            }}
-          >
-            🔍 置中
-          </button>
+          <div style={{ display: "flex", gap: "2px" }}>
+             <button onClick={handleZoomToFit} style={{ background: "#17a2b8", color: "#fff", border: "none", padding: "6px 10px", borderRadius: "4px", cursor: "pointer", fontWeight: "bold", fontSize: isMobile ? "11px" : "13px" }}>🔍 全圖</button>
+             {/* 🔥 手機專用縮放按鈕 */}
+             <button onClick={() => cameraRef.current.zoom = Math.min(150, cameraRef.current.zoom * 1.3)} style={{ background: "#6c757d", color: "#fff", border: "none", padding: "6px 10px", borderRadius: "4px", cursor: "pointer", fontWeight: "bold", fontSize: isMobile ? "11px" : "13px" }}>➕</button>
+             <button onClick={() => cameraRef.current.zoom = Math.max(0.01, cameraRef.current.zoom * 0.7)} style={{ background: "#6c757d", color: "#fff", border: "none", padding: "6px 10px", borderRadius: "4px", cursor: "pointer", fontWeight: "bold", fontSize: isMobile ? "11px" : "13px" }}>➖</button>
+          </div>
 
-          <button
-            onClick={() => {
-              saveState();
-              setPaths([]);
-              setSelectedPathId(null);
-              setSelRange({ pathId: null, p1: null, p2: null });
-            }}
-            style={{
-              background: "#6c757d",
-              color: "#fff",
-              border: "none",
-              padding: "6px 12px",
-              borderRadius: "4px",
-              cursor: "pointer",
-            }}
-          >
-            ✖ 清除
-          </button>
+          <button onClick={() => { saveState(); setPaths([]); setSelectedPathId(null); setSelRange({ pathId: null, p1: null, p2: null }); }} style={{ background: "#dc3545", color: "#fff", border: "none", padding: "6px 10px", borderRadius: "4px", cursor: "pointer", fontSize: isMobile ? "11px" : "13px" }}>✖ 清除</button>
 
-          <label
-            style={{
-              display: "flex",
-              alignItems: "center",
-              fontSize: "12px",
-              marginLeft: "5px",
-              cursor: "pointer",
-            }}
-          >
-            <input
-              type="checkbox"
-              checked={isOrtho}
-              onChange={(e) => setIsOrtho(e.target.checked)}
-            />{" "}
-            📐 正交
+          <label style={{ display: "flex", alignItems: "center", fontSize: "12px", cursor: "pointer", paddingLeft: "5px" }}>
+            <input type="checkbox" checked={isOrtho} onChange={(e) => setIsOrtho(e.target.checked)} /> 📐 正交
           </label>
         </div>
 
@@ -1838,398 +1569,83 @@ const CncWorkspace = () => {
             color: "#00ff00",
             fontFamily: "monospace",
             fontSize: "13px",
+            pointerEvents: "none" // 避免擋住觸控
           }}
         >
-          Z: <span id="coordZ">0.000</span> / X(直):{" "}
-          <span id="coordX">0.000</span>
+          Z: <span id="coordZ">0.000</span> / X: <span id="coordX">0.000</span>
         </div>
       </div>
 
       <div
         style={{
-          width: "400px",
+          width: isMobile ? "100%" : "400px", // 🔥 手機版寬度 100%
+          minHeight: isMobile ? "45vh" : "100vh", // 🔥 手機版給予基本高度
           background: "#252526",
-          padding: "20px",
-          borderLeft: "1px solid #444",
+          padding: isMobile ? "15px" : "20px",
+          borderLeft: isMobile ? "none" : "1px solid #444",
+          borderTop: isMobile ? "1px solid #444" : "none", // 手機版加上分隔線
           overflowY: "auto",
         }}
       >
-        <h3 style={{ color: "#00FFFF", marginTop: 0 }}>📦 參數與安全距離</h3>
+        <h3 style={{ color: "#00FFFF", marginTop: 0, fontSize: isMobile ? "16px" : "18px" }}>📦 參數與安全距離</h3>
         <div
           style={{
             display: "grid",
-            gridTemplateColumns: "1fr 1fr 1fr",
+            gridTemplateColumns: isMobile ? "1fr 1fr" : "1fr 1fr 1fr", // 🔥 手機版變 2 欄避免太擠
             gap: "8px",
             marginBottom: "15px",
           }}
         >
-          <div>
-            <label style={{ fontSize: "11px", color: "#ccc" }}>外徑 OD</label>
-            <input
-              type="number"
-              value={stock.od}
-              onChange={(e) => setStock({ ...stock, od: Number(e.target.value) || 0 })}
-              style={{
-                width: "100%",
-                background: "#111",
-                color: "#fff",
-                border: "none",
-                padding: "5px",
-              }}
-            />
-          </div>
-          <div>
-            <label style={{ fontSize: "11px", color: "#ccc" }}>內徑 ID</label>
-            <input
-              type="number"
-              value={stock.id}
-              onChange={(e) => setStock({ ...stock, id: Number(e.target.value) || 0 })}
-              style={{
-                width: "100%",
-                background: "#111",
-                color: "#fff",
-                border: "none",
-                padding: "5px",
-              }}
-            />
-          </div>
-          <div>
-            <label style={{ fontSize: "11px", color: "#ccc" }}>長度 L</label>
-            <input
-              type="number"
-              value={stock.length}
-              onChange={(e) => setStock({ ...stock, length: Number(e.target.value) || 0 })}
-              style={{
-                width: "100%",
-                background: "#111",
-                color: "#fff",
-                border: "none",
-                padding: "5px",
-              }}
-            />
-          </div>
-
-          <div>
-            <label style={{ fontSize: "11px", color: "#ffeb3b" }}>
-              端面預留 Z
-            </label>
-            <input
-              type="number"
-              step="0.1"
-              value={stock.face}
-              onChange={(e) =>
-                setStock({ ...stock, face: parseFloat(e.target.value) || 0 })
-              }
-              style={{
-                width: "100%",
-                background: "#111",
-                color: "#fff",
-                border: "1px solid #ffeb3b",
-                padding: "4px",
-              }}
-            />
-          </div>
-          <div>
-            <label style={{ fontSize: "11px", color: "#ccc" }}>
-              粗車深 DOC
-            </label>
-            <input
-              type="number"
-              step="0.1"
-              value={cam.doc}
-              onChange={(e) =>
-                setCam({ ...cam, doc: parseFloat(e.target.value) || 0 })
-              }
-              style={{
-                width: "100%",
-                background: "#111",
-                color: "#fff",
-                border: "none",
-                padding: "5px",
-              }}
-            />
-          </div>
-          <div>
-            <label style={{ fontSize: "11px", color: "#ccc" }}>進給 F</label>
-            <input
-              type="number"
-              step="0.05"
-              value={cam.feed}
-              onChange={(e) =>
-                setCam({ ...cam, feed: parseFloat(e.target.value) || 0 })
-              }
-              style={{
-                width: "100%",
-                background: "#111",
-                color: "#fff",
-                border: "none",
-                padding: "5px",
-              }}
-            />
-          </div>
-
-          <div>
-            <label style={{ fontSize: "11px", color: "#ccc" }}>轉速 G50</label>
-            <input
-              type="number"
-              value={cam.g50}
-              onChange={(e) => setCam({ ...cam, g50: Number(e.target.value) || 0 })}
-              style={{
-                width: "100%",
-                background: "#111",
-                color: "#fff",
-                border: "none",
-                padding: "5px",
-              }}
-            />
-          </div>
-          <div>
-            <label style={{ fontSize: "11px", color: "#0dcaf0" }}>
-              X預留(U)
-            </label>
-            <input
-              type="number"
-              step="0.1"
-              value={cam.allowX}
-              onChange={(e) =>
-                setCam({ ...cam, allowX: parseFloat(e.target.value) || 0 })
-              }
-              style={{
-                width: "100%",
-                background: "#111",
-                color: "#fff",
-                border: "1px solid #0dcaf0",
-                padding: "4px",
-              }}
-            />
-          </div>
-          <div>
-            <label style={{ fontSize: "11px", color: "#0dcaf0" }}>
-              Z預留(W)
-            </label>
-            <input
-              type="number"
-              step="0.1"
-              value={cam.allowZ}
-              onChange={(e) =>
-                setCam({ ...cam, allowZ: parseFloat(e.target.value) || 0 })
-              }
-              style={{
-                width: "100%",
-                background: "#111",
-                color: "#fff",
-                border: "1px solid #0dcaf0",
-                padding: "4px",
-              }}
-            />
-          </div>
+          <div><label style={{ fontSize: "11px", color: "#ccc" }}>外徑 OD</label><input type="number" value={stock.od} onChange={(e) => setStock({ ...stock, od: Number(e.target.value) || 0 })} style={{ width: "100%", background: "#111", color: "#fff", border: "none", padding: "5px" }} /></div>
+          <div><label style={{ fontSize: "11px", color: "#ccc" }}>內徑 ID</label><input type="number" value={stock.id} onChange={(e) => setStock({ ...stock, id: Number(e.target.value) || 0 })} style={{ width: "100%", background: "#111", color: "#fff", border: "none", padding: "5px" }} /></div>
+          <div><label style={{ fontSize: "11px", color: "#ccc" }}>長度 L</label><input type="number" value={stock.length} onChange={(e) => setStock({ ...stock, length: Number(e.target.value) || 0 })} style={{ width: "100%", background: "#111", color: "#fff", border: "none", padding: "5px" }} /></div>
+          <div><label style={{ fontSize: "11px", color: "#ffeb3b" }}>端面預留 Z</label><input type="number" step="0.1" value={stock.face} onChange={(e) => setStock({ ...stock, face: parseFloat(e.target.value) || 0 })} style={{ width: "100%", background: "#111", color: "#fff", border: "1px solid #ffeb3b", padding: "4px" }} /></div>
+          <div><label style={{ fontSize: "11px", color: "#ccc" }}>粗車深 DOC</label><input type="number" step="0.1" value={cam.doc} onChange={(e) => setCam({ ...cam, doc: parseFloat(e.target.value) || 0 })} style={{ width: "100%", background: "#111", color: "#fff", border: "none", padding: "5px" }} /></div>
+          <div><label style={{ fontSize: "11px", color: "#ccc" }}>進給 F</label><input type="number" step="0.05" value={cam.feed} onChange={(e) => setCam({ ...cam, feed: parseFloat(e.target.value) || 0 })} style={{ width: "100%", background: "#111", color: "#fff", border: "none", padding: "5px" }} /></div>
+          <div><label style={{ fontSize: "11px", color: "#ccc" }}>轉速 G50</label><input type="number" value={cam.g50} onChange={(e) => setCam({ ...cam, g50: Number(e.target.value) || 0 })} style={{ width: "100%", background: "#111", color: "#fff", border: "none", padding: "5px" }} /></div>
+          <div><label style={{ fontSize: "11px", color: "#0dcaf0" }}>X預留(U)</label><input type="number" step="0.1" value={cam.allowX} onChange={(e) => setCam({ ...cam, allowX: parseFloat(e.target.value) || 0 })} style={{ width: "100%", background: "#111", color: "#fff", border: "1px solid #0dcaf0", padding: "4px" }} /></div>
+          <div><label style={{ fontSize: "11px", color: "#0dcaf0" }}>Z預留(W)</label><input type="number" step="0.1" value={cam.allowZ} onChange={(e) => setCam({ ...cam, allowZ: parseFloat(e.target.value) || 0 })} style={{ width: "100%", background: "#111", color: "#fff", border: "1px solid #0dcaf0", padding: "4px" }} /></div>
         </div>
 
         <button
           onClick={() => setIsInner(!isInner)}
-          style={{
-            width: "100%",
-            padding: "10px",
-            background: isInner ? "#e83e8c" : "#007bff",
-            color: "#fff",
-            border: "none",
-            borderRadius: "4px",
-            marginBottom: "15px",
-            fontWeight: "bold",
-            cursor: "pointer",
-          }}
+          style={{ width: "100%", padding: "10px", background: isInner ? "#e83e8c" : "#007bff", color: "#fff", border: "none", borderRadius: "4px", marginBottom: "15px", fontWeight: "bold", cursor: "pointer" }}
         >
           加工方位：{isInner ? "內徑模式 (ID)" : "外徑模式 (OD)"}
         </button>
 
-        <h4
-          style={{ color: "#ffeb3b", fontSize: "13px", margin: "10px 0 5px 0" }}
-        >
-          ⚔️ 刀片設定
-        </h4>
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "1fr 1fr 1fr",
-            gap: "5px",
-            marginBottom: "15px",
-            background: "#111",
-            padding: "10px",
-            borderRadius: "4px",
-            border: "1px solid #333",
-          }}
-        >
-          <div>
-            <label style={{ fontSize: "11px", color: "#aaa" }}>刀號</label>
-            <input
-              type="text"
-              value={toolConfig.code}
-              onChange={(e) =>
-                setToolConfig({ ...toolConfig, code: e.target.value })
-              }
-              style={{
-                width: "100%",
-                background: "#222",
-                color: "#fff",
-                border: "none",
-                padding: "5px",
-              }}
-            />
-          </div>
-          <div>
-            <label style={{ fontSize: "11px", color: "#aaa" }}>R角</label>
-            <input
-              type="number"
-              step="0.1"
-              value={toolConfig.r}
-              onChange={(e) =>
-                setToolConfig({
-                  ...toolConfig,
-                  r: parseFloat(e.target.value) || 0,
-                })
-              }
-              style={{
-                width: "100%",
-                background: "#222",
-                color: "#fff",
-                border: "none",
-                padding: "5px",
-              }}
-            />
-          </div>
-          <div>
-            <label style={{ fontSize: "11px", color: "#aaa" }}>角度(°)</label>
-            <select
-              value={toolConfig.angle}
-              onChange={(e) =>
-                setToolConfig({
-                  ...toolConfig,
-                  angle: parseInt(e.target.value),
-                })
-              }
-              style={{
-                width: "100%",
-                background: "#222",
-                color: "#fff",
-                border: "none",
-                padding: "5px",
-              }}
-            >
-              <option value="35">VNMG(35)</option>
-              <option value="55">DNMG(55)</option>
-              <option value="80">CNMG(80)</option>
-            </select>
-          </div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: "5px", marginBottom: "15px", background: "#111", padding: "10px", borderRadius: "4px", border: "1px solid #333" }}>
+          <div><label style={{ fontSize: "11px", color: "#aaa" }}>刀號</label><input type="text" value={toolConfig.code} onChange={(e) => setToolConfig({ ...toolConfig, code: e.target.value })} style={{ width: "100%", background: "#222", color: "#fff", border: "none", padding: "5px" }} /></div>
+          <div><label style={{ fontSize: "11px", color: "#aaa" }}>R角</label><input type="number" step="0.1" value={toolConfig.r} onChange={(e) => setToolConfig({ ...toolConfig, r: parseFloat(e.target.value) || 0 })} style={{ width: "100%", background: "#222", color: "#fff", border: "none", padding: "5px" }} /></div>
+          <div><label style={{ fontSize: "11px", color: "#aaa" }}>角度(°)</label><select value={toolConfig.angle} onChange={(e) => setToolConfig({ ...toolConfig, angle: parseInt(e.target.value) })} style={{ width: "100%", background: "#222", color: "#fff", border: "none", padding: "5px" }}><option value="35">VNMG(35)</option><option value="55">DNMG(55)</option><option value="80">CNMG(80)</option></select></div>
         </div>
 
         {activePath && (
           <div style={{ marginBottom: "15px", background: "#111", padding: "10px", borderRadius: "4px", border: "1px solid #333" }}>
             <h4 style={{ color: "#0dcaf0", fontSize: "13px", margin: "0 0 10px 0" }}>📏 尺寸與座標編輯</h4>
-            
             <div style={{ display: "flex", gap: "5px", marginBottom: "10px" }}>
               <input type="number" placeholder="Z偏移" value={transform.dz} onChange={e => setTransform({...transform, dz: e.target.value})} style={{ width: "33%", background: "#222", color: "#fff", border: "none", padding: "5px", fontSize: "11px" }} />
               <input type="number" placeholder="X偏移" value={transform.dx} onChange={e => setTransform({...transform, dx: e.target.value})} style={{ width: "33%", background: "#222", color: "#fff", border: "none", padding: "5px", fontSize: "11px" }} />
               <input type="number" placeholder="比例縮放" value={transform.scale} onChange={e => setTransform({...transform, scale: e.target.value})} style={{ width: "33%", background: "#222", color: "#fff", border: "none", padding: "5px", fontSize: "11px" }} />
             </div>
             <button onClick={applyTransform} style={{ width: "100%", background: "#0dcaf0", color: "#000", border: "none", padding: "5px", borderRadius: "4px", marginBottom: "10px", fontWeight: "bold", cursor: "pointer" }}>套用整段變換</button>
-
             <div style={{ maxHeight: "150px", overflowY: "auto", paddingRight: "5px" }}>
               {activePath.points.map((pt, idx) => (
                 <div key={idx} style={{ display: "flex", gap: "5px", marginBottom: "5px", alignItems: "center" }}>
                   <span style={{ color: "#888", fontSize: "11px", width: "25px" }}>P{idx}</span>
-                  <div style={{ display: "flex", flex: 1, alignItems: "center", gap: "2px" }}>
-                    <span style={{ color: "#ccc", fontSize: "10px" }}>Z</span>
-                    <input
-                      type="number"
-                      step="any"
-                      value={pt.x !== undefined ? Number(pt.x).toString() : ""}
-                      onFocus={saveState}
-                      onChange={(e) => handlePointChange(activePath.id, idx, 'Z', e.target.value)}
-                      style={{ width: "100%", background: "#222", color: "#fff", border: "1px solid #444", padding: "2px 4px", fontSize: "11px" }}
-                    />
-                  </div>
-                  <div style={{ display: "flex", flex: 1, alignItems: "center", gap: "2px" }}>
-                    <span style={{ color: "#ccc", fontSize: "10px" }}>X</span>
-                    <input
-                      type="number"
-                      step="any"
-                      value={pt.y !== undefined ? Number(-pt.y * 2).toString() : ""}
-                      onFocus={saveState}
-                      onChange={(e) => handlePointChange(activePath.id, idx, 'X', e.target.value)}
-                      style={{ width: "100%", background: "#222", color: "#fff", border: "1px solid #444", padding: "2px 4px", fontSize: "11px" }}
-                    />
-                  </div>
+                  <div style={{ display: "flex", flex: 1, alignItems: "center", gap: "2px" }}><span style={{ color: "#ccc", fontSize: "10px" }}>Z</span><input type="number" step="any" value={pt.x !== undefined ? Number(pt.x).toString() : ""} onFocus={saveState} onChange={(e) => handlePointChange(activePath.id, idx, 'Z', e.target.value)} style={{ width: "100%", background: "#222", color: "#fff", border: "1px solid #444", padding: "2px 4px", fontSize: "11px" }} /></div>
+                  <div style={{ display: "flex", flex: 1, alignItems: "center", gap: "2px" }}><span style={{ color: "#ccc", fontSize: "10px" }}>X</span><input type="number" step="any" value={pt.y !== undefined ? Number(-pt.y * 2).toString() : ""} onFocus={saveState} onChange={(e) => handlePointChange(activePath.id, idx, 'X', e.target.value)} style={{ width: "100%", background: "#222", color: "#fff", border: "1px solid #444", padding: "2px 4px", fontSize: "11px" }} /></div>
                 </div>
               ))}
             </div>
           </div>
         )}
 
-        <button
-          onClick={solidifyFeatures}
-          style={{
-            width: "100%",
-            padding: "10px",
-            background: "#17a2b8",
-            color: "white",
-            border: "none",
-            borderRadius: "4px",
-            marginBottom: "10px",
-            fontWeight: "bold",
-            cursor: "pointer",
-          }}
-        >
-          🔨 實體化所有倒角
-        </button>
-
-        <button
-          onClick={startSimulation}
-          style={{
-            width: "100%",
-            padding: "15px",
-            background: "#fd7e14",
-            color: "white",
-            border: "none",
-            borderRadius: "4px",
-            marginBottom: "10px",
-            fontWeight: "bold",
-            fontSize: "16px",
-            cursor: "pointer",
-          }}
-        >
-          ▶️ 刀具路徑模擬
-        </button>
-
-        <button
-          onClick={genGCode}
-          style={{
-            width: "100%",
-            padding: "15px",
-            background: "#28a745",
-            color: "white",
-            border: "none",
-            borderRadius: "4px",
-            fontWeight: "bold",
-            fontSize: "16px",
-            cursor: "pointer",
-          }}
-        >
-          🚀 產生 G-Code
-        </button>
-        <textarea
-          value={gcode}
-          readOnly
-          style={{
-            width: "100%",
-            height: "300px",
-            marginTop: "15px",
-            background: "#000",
-            color: "#00ff00",
-            fontFamily: "monospace",
-            fontSize: "11px",
-            border: "1px solid #444",
-          }}
-        />
+        <button onClick={solidifyFeatures} style={{ width: "100%", padding: "10px", background: "#17a2b8", color: "white", border: "none", borderRadius: "4px", marginBottom: "10px", fontWeight: "bold", cursor: "pointer" }}>🔨 實體化所有倒角</button>
+        <button onClick={startSimulation} style={{ width: "100%", padding: "15px", background: "#fd7e14", color: "white", border: "none", borderRadius: "4px", marginBottom: "10px", fontWeight: "bold", fontSize: "16px", cursor: "pointer" }}>▶️ 刀具路徑模擬</button>
+        <button onClick={genGCode} style={{ width: "100%", padding: "15px", background: "#28a745", color: "white", border: "none", borderRadius: "4px", fontWeight: "bold", fontSize: "16px", cursor: "pointer" }}>🚀 產生 G-Code</button>
+        
+        <textarea value={gcode} readOnly style={{ width: "100%", height: isMobile ? "200px" : "300px", marginTop: "15px", background: "#000", color: "#00ff00", fontFamily: "monospace", fontSize: "11px", border: "1px solid #444" }} />
       </div>
     </div>
   );

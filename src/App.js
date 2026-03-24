@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState, useMemo } from "react";
+
 // ✅ 搬移到這裡：檔案最頂端，全域可用
 const checkIntersect = (p1, p2, p3, p4, isTrimMode = false) => {
   const den = (p4.y - p3.y) * (p2.x - p1.x) - (p4.x - p3.x) * (p2.y - p1.y);
@@ -10,6 +11,7 @@ const checkIntersect = (p1, p2, p3, p4, isTrimMode = false) => {
   }
   return null;
 };
+
 const CncWorkspace = () => {
   const [mode, setMode] = useState("DRAW_LINE");
   const [lineMode, setLineMode] = useState("G01");
@@ -50,7 +52,6 @@ const CncWorkspace = () => {
     zoom: 1.5,
   });
 
-  // 🔥 修復：補回 sim 初始狀態，解決 Cannot read properties of undefined (reading 'active') 報錯
   const interactionRef = useRef({
     isDragging: false,
     lastMouse: { x: 0, y: 0 },
@@ -69,6 +70,7 @@ const CncWorkspace = () => {
       ...prev.slice(-29),
       JSON.parse(JSON.stringify(paths)),
     ]);
+    
   const handleUndo = () => {
     setHistory((prev) => {
       if (prev.length === 0) return prev;
@@ -145,28 +147,9 @@ const CncWorkspace = () => {
             nx *= -1;
             ny *= -1;
           }
-          // --- 核心幾何算法：檢查線段相交並返回交點 ---
-          const checkIntersect = (p1, p2, p3, p4, isTrimMode = false) => {
-            const den =
-              (p4.y - p3.y) * (p2.x - p1.x) - (p4.x - p3.x) * (p2.y - p1.y);
-            if (Math.abs(den) < 1e-10) return null; // 平行
-
-            const ua =
-              ((p4.x - p3.x) * (p1.y - p3.y) - (p4.y - p3.y) * (p1.x - p3.x)) /
-              den;
-            const ub =
-              ((p2.x - p1.x) * (p1.y - p3.y) - (p2.y - p1.y) * (p1.x - p3.x)) /
-              den;
-
-            // 如果是修剪模式，我們檢查修剪路徑（ub）是否穿過被修剪線段（ua）
-            if (ua >= 0 && ua <= 1 && ub >= 0 && ub <= 1) {
-              return {
-                x: p1.x + ua * (p2.x - p1.x),
-                y: p1.y + ua * (p2.y - p1.y),
-              };
-            }
-            return null;
-          };
+          
+          // 🔥 修正：已移除內部重複宣告的 checkIntersect
+          
           const cx = pA.x + nx * r,
             cy = pA.y + ny * r;
           const pB_x = pt.x + v2.x * d,
@@ -192,19 +175,18 @@ const CncWorkspace = () => {
     () => paths.map((p) => ({ ...p, points: getVisualPoints(p.points) })),
     [paths]
   );
+  
   const activePath = useMemo(
     () => paths.find((p) => p.id === selectedPathId) || paths[paths.length - 1],
     [paths, selectedPathId]
   );
 
-  // 🔥 修復：完全隔離 x,y 與 cx,cy 避免圓弧刀補變形！
   const getOffsetPoints = (pts, toolR, isInner) => {
     if (!pts || !Array.isArray(pts) || pts.length < 2) return [];
     const dir = isInner ? -1 : 1;
     return pts
       .map((pt, i) => {
         if (!pt) return null;
-        // 圓弧偏移：更新半徑，並計算新的「外圍端點」存入 x, y。cx, cy (圓心) 保持不變。
         if (pt.type === "arc" && pt.radius) {
           const mag = pt.ccw
             ? dir === 1
@@ -218,7 +200,6 @@ const CncWorkspace = () => {
           const newY = pt.cy + Math.sin(pt.endAngle) * newR;
           return { ...pt, radius: newR, x: newX, y: newY };
         }
-        // 直線偏移：法線平移，新的「端點」存入 x, y
         const p1 = i === 0 ? pt : pts[i - 1],
           p2 = i === 0 ? pts[1] : pt;
         if (!p1 || !p2) return { ...pt };
@@ -241,6 +222,7 @@ const CncWorkspace = () => {
       })),
     [visualPaths, toolConfig.r, isInner]
   );
+  
   const activeCompPts = useMemo(
     () =>
       visualCompPaths[paths.findIndex((p) => p.id === activePath?.id)]
@@ -379,15 +361,6 @@ const CncWorkspace = () => {
     setSelectedPathId(newId);
   };
 
-  const handleCRChange = (pIdx, ptIdx, type, val) => {
-    setPaths((prev) => {
-      const n = [...prev];
-      if (n[pIdx]?.points[ptIdx])
-        n[pIdx].points[ptIdx][type] = parseFloat(val) || 0;
-      return n;
-    });
-  };
-
   const genGCode = () => {
     if (!activePath || !activePath.points || activePath.points.length < 2) {
       alert("請畫出或選定一條包含2點以上的加工路徑！");
@@ -417,7 +390,6 @@ const CncWorkspace = () => {
     setGcode(g);
   };
 
-  // 🔥 修復：將原本依賴 cx,cy 的模擬座標映射回 x,y
   const startSimulation = () => {
     if (!activeCompPts || activeCompPts.length < 2) {
       alert("請選擇加工路徑！");
@@ -482,6 +454,8 @@ const CncWorkspace = () => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext("2d");
+    let animationFrameId; // 🔥 修正：建立變數來追蹤 requestAnimationFrame
+
     const render = () => {
       canvas.width = canvas.parentElement.clientWidth;
       canvas.height = canvas.parentElement.clientHeight;
@@ -557,7 +531,6 @@ const CncWorkspace = () => {
         });
         ctx.stroke();
 
-        // 🔥 繪製刀尖補正 (完美遵循 x, y 端點軌跡)
         const cPts = visualCompPaths[idx]?.points;
         if (
           cPts &&
@@ -823,9 +796,16 @@ const CncWorkspace = () => {
         }
       }
       ctx.restore();
-      requestAnimationFrame(render);
+      
+      // 🔥 修正：把回傳的 ID 存起來
+      animationFrameId = requestAnimationFrame(render);
     };
     render();
+    
+    // 🔥 修正：加上 cleanup function 確保不會產生無限疊加的無窮迴圈
+    return () => {
+      cancelAnimationFrame(animationFrameId);
+    };
   }, [
     visualPaths,
     activePath,
@@ -1618,12 +1598,13 @@ const CncWorkspace = () => {
             marginBottom: "15px",
           }}
         >
+          {/* 🔥 修正：所有綁定到數值的 Input 加上 Number() 強制轉型 */}
           <div>
             <label style={{ fontSize: "11px", color: "#ccc" }}>外徑 OD</label>
             <input
               type="number"
               value={stock.od}
-              onChange={(e) => setStock({ ...stock, od: e.target.value })}
+              onChange={(e) => setStock({ ...stock, od: Number(e.target.value) || 0 })}
               style={{
                 width: "100%",
                 background: "#111",
@@ -1638,7 +1619,7 @@ const CncWorkspace = () => {
             <input
               type="number"
               value={stock.id}
-              onChange={(e) => setStock({ ...stock, id: e.target.value })}
+              onChange={(e) => setStock({ ...stock, id: Number(e.target.value) || 0 })}
               style={{
                 width: "100%",
                 background: "#111",
@@ -1653,7 +1634,7 @@ const CncWorkspace = () => {
             <input
               type="number"
               value={stock.length}
-              onChange={(e) => setStock({ ...stock, length: e.target.value })}
+              onChange={(e) => setStock({ ...stock, length: Number(e.target.value) || 0 })}
               style={{
                 width: "100%",
                 background: "#111",
@@ -1728,7 +1709,7 @@ const CncWorkspace = () => {
             <input
               type="number"
               value={cam.g50}
-              onChange={(e) => setCam({ ...cam, g50: e.target.value })}
+              onChange={(e) => setCam({ ...cam, g50: Number(e.target.value) || 0 })}
               style={{
                 width: "100%",
                 background: "#111",

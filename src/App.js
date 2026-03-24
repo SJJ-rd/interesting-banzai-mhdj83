@@ -102,26 +102,54 @@ const CncWorkspace = () => {
   // --- 幾何計算引擎 ---
   const getVisualPoints = (pts) => {
     if (!pts || !Array.isArray(pts)) return [];
+    if (pts.length < 2) return pts.map((p) => ({ ...p }));
+
     let res = [];
+    // 🔥 偵測是否為封閉路徑 (起點與終點重合)
+    const isClosed =
+      pts.length > 2 &&
+      Math.hypot(
+        pts[0].x - pts[pts.length - 1].x,
+        pts[0].y - pts[pts.length - 1].y
+      ) < 0.001;
+    let closedCornerPA = null;
+
     for (let i = 0; i < pts.length; i++) {
       const pt = pts[i];
-      if (!pt || typeof pt.x === "undefined" || typeof pt.y === "undefined")
-        continue;
+      if (!pt || typeof pt.x === "undefined" || typeof pt.y === "undefined") continue;
 
-      if ((pt.c > 0 || pt.r > 0) && i > 0 && i < pts.length - 1) {
-        const p = pts[i - 1],
-          n = pts[i + 1];
-        if (!p || !n) {
-          res.push(pt);
-          continue;
+      let applyCR = false;
+      let p, n;
+      let currentC = pt.c || 0;
+      let currentR = pt.r || 0;
+
+      // 🔥 處理封閉路徑的起點/終點倒角
+      if (isClosed && (i === 0 || i === pts.length - 1)) {
+        currentC = pts[0].c || pts[pts.length - 1].c || 0;
+        currentR = pts[0].r || pts[pts.length - 1].r || 0;
+        if (currentC > 0 || currentR > 0) {
+          applyCR = true;
+          p = pts[pts.length - 2];
+          n = pts[1];
         }
+      } else if ((currentC > 0 || currentR > 0) && i > 0 && i < pts.length - 1) {
+        applyCR = true;
+        p = pts[i - 1];
+        n = pts[i + 1];
+      }
 
+      if (applyCR && p && n) {
         const v1 = { x: p.x - pt.x, y: p.y - pt.y },
-          v2 = { x: n.x - pt.x, y: n.y - pt.y };
+              v2 = { x: n.x - pt.x, y: n.y - pt.y };
         const l1 = Math.hypot(v1.x, v1.y),
-          l2 = Math.hypot(v2.x, v2.y);
+              l2 = Math.hypot(v2.x, v2.y);
+
         if (l1 < 0.001 || l2 < 0.001) {
-          res.push(pt);
+          if (i === pts.length - 1 && isClosed && closedCornerPA) {
+            res.push({ ...closedCornerPA });
+          } else {
+            res.push({ ...pt });
+          }
           continue;
         }
         v1.x /= l1;
@@ -129,50 +157,67 @@ const CncWorkspace = () => {
         v2.x /= l2;
         v2.y /= l2;
 
-        if (pt.c > 0) {
-          const c = parseFloat(pt.c);
-          res.push({ ...pt, x: pt.x + v1.x * c, y: pt.y + v1.y * c });
-          res.push({ x: pt.x + v2.x * c, y: pt.y + v2.y * c, type: "G01" });
-        } else if (pt.r > 0) {
-          const r = parseFloat(pt.r);
+        let pA, pB;
+        if (currentC > 0) {
+          const c = parseFloat(currentC);
+          pA = { ...pt, x: pt.x + v1.x * c, y: pt.y + v1.y * c };
+          pB = { x: pt.x + v2.x * c, y: pt.y + v2.y * c, type: pt.type || "G01" };
+        } else {
+          const r = parseFloat(currentR);
           const dot = v1.x * v2.x + v1.y * v2.y;
           const angle = Math.acos(Math.max(-1, Math.min(1, dot)));
           const d = r / Math.tan(angle / 2);
-          const pA = { x: pt.x + v1.x * d, y: pt.y + v1.y * d, type: pt.type };
-          const ccw = v1.x * v2.y - v1.y * v2.x > 0;
+          pA = { x: pt.x + v1.x * d, y: pt.y + v1.y * d, type: pt.type || "G01" };
+
           let nx = -v1.y,
-            ny = v1.x;
+              ny = v1.x;
           if (nx * v2.x + ny * v2.y < 0) {
             nx *= -1;
             ny *= -1;
           }
-          
           const cx = pA.x + nx * r,
-            cy = pA.y + ny * r;
+                cy = pA.y + ny * r;
           const pB_x = pt.x + v2.x * d,
-            pB_y = pt.y + v2.y * d;
-            
+                pB_y = pt.y + v2.y * d;
+
           const startAngle = Math.atan2(pA.y - cy, pA.x - cx);
           const endAngle = Math.atan2(pB_y - cy, pB_x - cx);
           let diff = endAngle - startAngle;
           while (diff > Math.PI) diff -= 2 * Math.PI;
           while (diff < -Math.PI) diff += 2 * Math.PI;
-          const drawCCW = diff < 0; 
+          const drawCCW = diff < 0;
 
-          res.push(pA, {
+          pB = {
             x: pB_x,
             y: pB_y,
             type: "arc",
             radius: r,
-            ccw,
+            ccw: diff > 0,
             drawCCW,
             cx,
             cy,
             startAngle,
             endAngle,
-          });
+          };
         }
-      } else res.push({ ...pt });
+
+        if (i === 0) {
+          closedCornerPA = pA; // 記下封閉路徑起始點取代後的真實坐標
+          res.push(pA, pB);
+        } else if (i === pts.length - 1) {
+          // 如果是最後一點，無縫接回起始點的 pA
+          if (closedCornerPA) res.push({ ...closedCornerPA });
+          else res.push(pA);
+        } else {
+          res.push(pA, pB);
+        }
+      } else {
+        if (i === pts.length - 1 && isClosed && closedCornerPA) {
+          res.push({ ...closedCornerPA });
+        } else {
+          res.push({ ...pt });
+        }
+      }
     }
     return res;
   };
@@ -267,21 +312,27 @@ const CncWorkspace = () => {
     return best;
   };
 
+  // 🔥 修正：強制計算最短路徑
   const calcSCE = (p1, center, p3) => {
     if (!p1 || !center || !p3) return null;
     const r = Math.hypot(p1.x - center.x, p1.y - center.y);
-    const ccw =
-      (center.x - p1.x) * (p3.y - p1.y) - (center.y - p1.y) * (p3.x - p1.x) > 0;
+    const startAngle = Math.atan2(p1.y - center.y, p1.x - center.x);
+    const endAngle = Math.atan2(p3.y - center.y, p3.x - center.x);
+    let diff = endAngle - startAngle;
+    while (diff > Math.PI) diff -= 2 * Math.PI;
+    while (diff < -Math.PI) diff += 2 * Math.PI;
     return {
       cx: center.x,
       cy: center.y,
       radius: r,
-      startAngle: Math.atan2(p1.y - center.y, p1.x - center.x),
-      endAngle: Math.atan2(p3.y - center.y, p3.x - center.x),
-      ccw,
+      startAngle,
+      endAngle,
+      ccw: diff > 0, // 確保 G-Code 輸出精準方向
+      drawCCW: diff < 0, // 確保畫布繪製短路徑
     };
   };
 
+  // 🔥 修正：強制計算最短路徑
   const calcSER = (p1, p2, mouse) => {
     if (!p1 || !p2 || !mouse) return null;
     const d = Math.hypot(p2.x - p1.x, p2.y - p1.y);
@@ -296,13 +347,21 @@ const CncWorkspace = () => {
     const cDist = Math.sqrt(Math.max(0, r * r - (d / 2) ** 2));
     const cx = mid.x + cDist * Math.sin(angle) * side,
       cy = mid.y - cDist * Math.cos(angle) * side;
+
+    const startAngle = Math.atan2(p1.y - cy, p1.x - cx);
+    const endAngle = Math.atan2(p2.y - cy, p2.x - cx);
+    let diff = endAngle - startAngle;
+    while (diff > Math.PI) diff -= 2 * Math.PI;
+    while (diff < -Math.PI) diff += 2 * Math.PI;
+
     return {
       cx,
       cy,
       radius: r,
-      startAngle: Math.atan2(p1.y - cy, p1.x - cx),
-      endAngle: Math.atan2(p2.y - cy, p2.x - cx),
-      ccw: side > 0,
+      startAngle,
+      endAngle,
+      ccw: diff > 0,
+      drawCCW: diff < 0,
     };
   };
 
@@ -339,7 +398,6 @@ const CncWorkspace = () => {
     );
   };
 
-  // 🔥 新增：一鍵置中 (Zoom to fit)
   const handleZoomToFit = () => {
     const canvas = canvasRef.current;
     if (!canvas || !canvas.parentElement) return;
@@ -347,13 +405,11 @@ const CncWorkspace = () => {
     const pWidth = canvas.parentElement.clientWidth;
     const pHeight = canvas.parentElement.clientHeight;
 
-    // 先用素材大小當作基本邊界
     let minX = -stock.length;
     let maxX = Number(stock.face) || 0;
     let minY = -stock.od / 2;
     let maxY = stock.od / 2;
 
-    // 將所有繪製的路徑點也考慮進邊界中
     paths.forEach((p) => {
       if (!p.points) return;
       p.points.forEach((pt) => {
@@ -364,21 +420,17 @@ const CncWorkspace = () => {
       });
     });
 
-    // 加上一些四周的 Padding
     const padding = 60;
     const boxWidth = maxX - minX || 1;
     const boxHeight = maxY - minY || 1;
 
-    // 計算符合長寬的最佳縮放比例
     const zoomX = (pWidth - padding * 2) / boxWidth;
     const zoomY = (pHeight - padding * 2) / boxHeight;
     const newZoom = Math.max(0.01, Math.min(zoomX, zoomY, 150));
 
-    // 計算邊界中心點
     const cx = (minX + maxX) / 2;
     const cy = (minY + maxY) / 2;
 
-    // 調整攝影機
     cameraRef.current.zoom = newZoom;
     cameraRef.current.x = pWidth / 2 - cx * newZoom;
     cameraRef.current.y = pHeight / 2 - cy * newZoom;
@@ -414,7 +466,6 @@ const CncWorkspace = () => {
   };
 
   const startSimulation = () => {
-    // 再次點擊模擬可以取消
     if (interactionRef.current.sim.active) {
       interactionRef.current.sim.active = false;
       return;
@@ -477,7 +528,6 @@ const CncWorkspace = () => {
     activeCompPts.forEach((pt) => sPts.push({ ...pt, type: pt.type || "G01" }));
     sPts.push({ x: safeZ, y: safeY, type: "G00" });
     
-    // 將計算好的路徑點放進去，並啟動模擬
     interactionRef.current.sim = { active: true, progress: 0, pts: sPts };
   };
 
@@ -488,7 +538,6 @@ const CncWorkspace = () => {
     const ctx = canvas.getContext("2d");
     let animationFrameId;
 
-    // 初始渲染時執行一次置中
     if (paths.length === 0 && stock.od > 0 && stock.length > 0 && !interactionRef.current.initialZoomed) {
       handleZoomToFit();
       interactionRef.current.initialZoomed = true;
@@ -609,8 +658,13 @@ const CncWorkspace = () => {
 
       paths.forEach((p) => {
         if (p.id !== activePath?.id || !p.points) return;
-        p.points.forEach((pt) => {
+        // 🔥 確保封閉路徑的最後一點不要重複顯示 C/R 文字
+        const isClosed = p.points.length > 2 && Math.hypot(p.points[0].x - p.points[p.points.length-1].x, p.points[0].y - p.points[p.points.length-1].y) < 0.001;
+        
+        p.points.forEach((pt, i) => {
           if (!pt || typeof pt.x === "undefined") return;
+          if (isClosed && i === p.points.length - 1) return; 
+
           drawCross(ctx, pt.x, pt.y, 5, "#fff");
           if (pt.c || pt.r) {
             ctx.fillStyle = "#ff00ff";
@@ -951,8 +1005,16 @@ const CncWorkspace = () => {
       if (hc) {
         saveState();
         setPaths((prev) => {
-          const n = [...prev];
-          n[hc.pIdx].points[hc.ptIdx][chamferType] = chamferVal;
+          // 🔥 修正：使用深拷貝確保狀態安全更新，並處理起點/終點同步
+          const n = JSON.parse(JSON.stringify(prev));
+          const pts = n[hc.pIdx].points;
+          pts[hc.ptIdx][chamferType] = chamferVal;
+          
+          const isClosed = pts.length > 2 && Math.hypot(pts[0].x - pts[pts.length-1].x, pts[0].y - pts[pts.length-1].y) < 0.001;
+          if (isClosed && (hc.ptIdx === 0 || hc.ptIdx === pts.length - 1)) {
+            pts[0][chamferType] = chamferVal;
+            pts[pts.length - 1][chamferType] = chamferVal;
+          }
           return n;
         });
       }
@@ -1102,7 +1164,13 @@ const CncWorkspace = () => {
         found = null;
       paths.forEach((p, pIdx) => {
         if (!p.points) return;
-        for (let i = 1; i < p.points.length - 1; i++) {
+        
+        // 🔥 修正：允許選中封閉路徑的起點/終點
+        const isClosed = p.points.length > 2 && Math.hypot(p.points[0].x - p.points[p.points.length-1].x, p.points[0].y - p.points[p.points.length-1].y) < 0.001;
+        
+        for (let i = 0; i < p.points.length; i++) {
+          if (!isClosed && (i === 0 || i === p.points.length - 1)) continue;
+          
           const pt = p.points[i];
           if (pt && Math.hypot(rawPt.x - pt.x, rawPt.y - pt.y) < minD) {
             minD = Math.hypot(rawPt.x - pt.x, rawPt.y - pt.y);
@@ -1565,7 +1633,6 @@ const CncWorkspace = () => {
             )}
           </div>
           
-          {/* 🔥 新增：一鍵置中按鈕 */}
           <button
             onClick={handleZoomToFit}
             style={{
@@ -1928,7 +1995,6 @@ const CncWorkspace = () => {
           🔨 實體化所有倒角
         </button>
 
-        {/* 🔥 新增：呼叫刀具路徑模擬的按鈕 */}
         <button
           onClick={startSimulation}
           style={{

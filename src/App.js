@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState, useMemo } from "react";
 
-// ✅ 1. 核心幾何算法：置於最外層，確保全域可用且防禦力加強
+// ✅ 1. 核心幾何算法：移至最外層，確保 handleMouseUp 能正確呼叫
 const checkIntersect = (p1, p2, p3, p4, isTrimMode = false) => {
   if (!p1 || !p2 || !p3 || !p4 || typeof p1.x === 'undefined' || typeof p3.x === 'undefined') return null;
   const den = (p4.y - p3.y) * (p2.x - p1.x) - (p4.x - p3.x) * (p2.y - p1.y);
@@ -33,15 +33,32 @@ const CncWorkspace = () => {
   const [offsetDist, setOffsetDist] = useState(2.0);
   const [chamferType, setChamferType] = useState("c");
   const [chamferVal, setChamferVal] = useState(2.0);
-  const [toolConfig, setToolConfig] = useState({ code: "0101", r: 0.8, angle: 55, color: "#00FFFF" });
+  const [toolConfig, setToolConfig] = useState({
+    code: "0101",
+    r: 0.8,
+    angle: 55,
+    color: "#00FFFF",
+  });
   const [stock, setStock] = useState({ od: 80, id: 0, length: 120, face: 2.0 });
-  const [cam, setCam] = useState({ vc: 200, g50: 2500, feed: 0.2, doc: 2.0, safeDist: 2.0, allowX: 0.5, allowZ: 0.1 });
+  const [cam, setCam] = useState({
+    vc: 200,
+    g50: 2500,
+    feed: 0.2,
+    doc: 2.0,
+    safeDist: 2.0,
+    allowX: 0.5,
+    allowZ: 0.1,
+  });
   const [gcode, setGcode] = useState("");
 
   const canvasRef = useRef(null);
   
-  // ✅ 2. 攝影機初始值設為 0，等 useEffect 計算置中
-  const cameraRef = useRef({ x: 0, y: 0, zoom: 1.5 });
+  // ✅ 2. 攝影機初始值校正：預設為 0，由 useEffect 自動計算置中
+  const cameraRef = useRef({
+    x: 0,
+    y: 0,
+    zoom: 1.5,
+  });
 
   const interactionRef = useRef({
     isDragging: false,
@@ -56,8 +73,11 @@ const CncWorkspace = () => {
     sim: { active: false, progress: 0, pts: [] },
   });
 
-  const saveState = () => setHistory((prev) => [...prev.slice(-29), JSON.parse(JSON.stringify(paths))]);
-  
+  const saveState = () =>
+    setHistory((prev) => [
+      ...prev.slice(-29),
+      JSON.parse(JSON.stringify(paths)),
+    ]);
   const handleUndo = () => {
     setHistory((prev) => {
       if (prev.length === 0) return prev;
@@ -93,16 +113,29 @@ const CncWorkspace = () => {
     let res = [];
     for (let i = 0; i < pts.length; i++) {
       const pt = pts[i];
-      if (!pt || typeof pt.x === "undefined" || typeof pt.y === "undefined") continue;
+      if (!pt || typeof pt.x === "undefined" || typeof pt.y === "undefined")
+        continue;
 
       if ((pt.c > 0 || pt.r > 0) && i > 0 && i < pts.length - 1) {
-        const p = pts[i - 1], n = pts[i + 1];
-        if (!p || !n) { res.push(pt); continue; }
+        const p = pts[i - 1],
+          n = pts[i + 1];
+        if (!p || !n) {
+          res.push(pt);
+          continue;
+        }
 
-        const v1 = { x: p.x - pt.x, y: p.y - pt.y }, v2 = { x: n.x - pt.x, y: n.y - pt.y };
-        const l1 = Math.hypot(v1.x, v1.y), l2 = Math.hypot(v2.x, v2.y);
-        if (l1 < 0.001 || l2 < 0.001) { res.push(pt); continue; }
-        v1.x /= l1; v1.y /= l1; v2.x /= l2; v2.y /= l2;
+        const v1 = { x: p.x - pt.x, y: p.y - pt.y },
+          v2 = { x: n.x - pt.x, y: n.y - pt.y };
+        const l1 = Math.hypot(v1.x, v1.y),
+          l2 = Math.hypot(v2.x, v2.y);
+        if (l1 < 0.001 || l2 < 0.001) {
+          res.push(pt);
+          continue;
+        }
+        v1.x /= l1;
+        v1.y /= l1;
+        v2.x /= l2;
+        v2.y /= l2;
 
         if (pt.c > 0) {
           const c = parseFloat(pt.c);
@@ -115,12 +148,24 @@ const CncWorkspace = () => {
           const d = r / Math.tan(angle / 2);
           const pA = { x: pt.x + v1.x * d, y: pt.y + v1.y * d, type: pt.type };
           const ccw = v1.x * v2.y - v1.y * v2.x > 0;
-          let nx = -v1.y, ny = v1.x;
-          if (nx * v2.x + ny * v2.y < 0) { nx *= -1; ny *= -1; }
-          const cx = pA.x + nx * r, cy = pA.y + ny * r;
-          const pB_x = pt.x + v2.x * d, pB_y = pt.y + v2.y * d;
+          let nx = -v1.y,
+            ny = v1.x;
+          if (nx * v2.x + ny * v2.y < 0) {
+            nx *= -1;
+            ny *= -1;
+          }
+          const cx = pA.x + nx * r,
+            cy = pA.y + ny * r;
+          const pB_x = pt.x + v2.x * d,
+            pB_y = pt.y + v2.y * d;
           res.push(pA, {
-            x: pB_x, y: pB_y, type: "arc", radius: r, ccw, cx, cy,
+            x: pB_x,
+            y: pB_y,
+            type: "arc",
+            radius: r,
+            ccw,
+            cx,
+            cy,
             startAngle: Math.atan2(pA.y - cy, pA.x - cx),
             endAngle: Math.atan2(pB_y - cy, pB_x - cx),
           });
@@ -130,48 +175,89 @@ const CncWorkspace = () => {
     return res;
   };
 
-  const visualPaths = useMemo(() => paths.map((p) => ({ ...p, points: getVisualPoints(p.points) })), [paths]);
-  const activePath = useMemo(() => paths.find((p) => p.id === selectedPathId) || paths[paths.length - 1], [paths, selectedPathId]);
+  const visualPaths = useMemo(
+    () => paths.map((p) => ({ ...p, points: getVisualPoints(p.points) })),
+    [paths]
+  );
+  const activePath = useMemo(
+    () => paths.find((p) => p.id === selectedPathId) || paths[paths.length - 1],
+    [paths, selectedPathId]
+  );
 
   const getOffsetPoints = (pts, toolR, isInner) => {
     if (!pts || !Array.isArray(pts) || pts.length < 2) return [];
     const dir = isInner ? -1 : 1;
-    return pts.map((pt, i) => {
-      if (!pt) return null;
-      if (pt.type === "arc" && pt.radius) {
-        const mag = pt.ccw ? (dir === 1 ? -toolR : toolR) : (dir === 1 ? toolR : -toolR);
-        const newR = Math.max(0.001, pt.radius + mag);
-        const newX = pt.cx + Math.cos(pt.endAngle) * newR;
-        const newY = pt.cy + Math.sin(pt.endAngle) * newR;
-        return { ...pt, radius: newR, x: newX, y: newY };
-      }
-      const p1 = i === 0 ? pt : pts[i - 1], p2 = i === 0 ? pts[1] : pt;
-      if (!p1 || !p2) return { ...pt };
-      const dx = p2.x - p1.x, dy = p2.y - p1.y, len = Math.hypot(dx, dy);
-      if (len < 1e-5) return { ...pt };
-      const newX = pt.x + (-dy / len) * toolR * dir;
-      const newY = pt.y + (dx / len) * toolR * dir;
-      return { ...pt, x: newX, y: newY };
-    }).filter(Boolean);
+    return pts
+      .map((pt, i) => {
+        if (!pt) return null;
+        if (pt.type === "arc" && pt.radius) {
+          const mag = pt.ccw
+            ? dir === 1
+              ? -toolR
+              : toolR
+            : dir === 1
+            ? toolR
+            : -toolR;
+          const newR = Math.max(0.001, pt.radius + mag);
+          const newX = pt.cx + Math.cos(pt.endAngle) * newR;
+          const newY = pt.cy + Math.sin(pt.endAngle) * newR;
+          return { ...pt, radius: newR, x: newX, y: newY };
+        }
+        const p1 = i === 0 ? pt : pts[i - 1],
+          p2 = i === 0 ? pts[1] : pt;
+        if (!p1 || !p2) return { ...pt };
+        const dx = p2.x - p1.x,
+          dy = p2.y - p1.y,
+          len = Math.hypot(dx, dy);
+        if (len < 1e-5) return { ...pt };
+        const newX = pt.x + (-dy / len) * toolR * dir;
+        const newY = pt.y + (dx / len) * toolR * dir;
+        return { ...pt, x: newX, y: newY };
+      })
+      .filter(Boolean);
   };
 
-  const visualCompPaths = useMemo(() => visualPaths.map((p) => ({ ...p, points: getOffsetPoints(p.points, toolConfig.r, isInner) })), [visualPaths, toolConfig.r, isInner]);
-  const activeCompPts = useMemo(() => visualCompPaths[paths.findIndex((p) => p.id === activePath?.id)]?.points || [], [activePath, visualCompPaths, paths]);
+  const visualCompPaths = useMemo(
+    () =>
+      visualPaths.map((p) => ({
+        ...p,
+        points: getOffsetPoints(p.points, toolConfig.r, isInner),
+      })),
+    [visualPaths, toolConfig.r, isInner]
+  );
+  const activeCompPts = useMemo(
+    () =>
+      visualCompPaths[paths.findIndex((p) => p.id === activePath?.id)]
+        ?.points || [],
+    [activePath, visualCompPaths, paths]
+  );
 
   const getTangentCircle = (mousePt) => {
     let best = null;
     let minD = 40 / cameraRef.current.zoom;
     paths.forEach((path) => {
-      if (!path.points) return;
+      if (!path.points || !Array.isArray(path.points)) return;
       for (let i = 0; i < path.points.length - 1; i++) {
-        const p1 = path.points[i], p2 = path.points[i + 1];
+        const p1 = path.points[i],
+          p2 = path.points[i + 1];
         if (!p1 || !p2) continue;
-        const dx = p2.x - p1.x, dy = p2.y - p1.y, len = Math.hypot(dx, dy);
+        const dx = p2.x - p1.x,
+          dy = p2.y - p1.y,
+          len = Math.hypot(dx, dy);
         if (len < 0.1) continue;
-        const t = Math.max(0, Math.min(1, ((mousePt.x - p1.x) * dx + (mousePt.y - p1.y) * dy) / (len * len)));
+        const t = Math.max(
+          0,
+          Math.min(
+            1,
+            ((mousePt.x - p1.x) * dx + (mousePt.y - p1.y) * dy) / (len * len)
+          )
+        );
         const proj = { x: p1.x + t * dx, y: p1.y + t * dy };
         const dist = Math.hypot(mousePt.x - proj.x, mousePt.y - proj.y);
-        if (dist < minD) { minD = dist; best = { cx: mousePt.x, cy: mousePt.y, r: dist }; }
+        if (dist < minD) {
+          minD = dist;
+          best = { cx: mousePt.x, cy: mousePt.y, r: dist };
+        }
       }
     });
     return best;
@@ -180,8 +266,16 @@ const CncWorkspace = () => {
   const calcSCE = (p1, center, p3) => {
     if (!p1 || !center || !p3) return null;
     const r = Math.hypot(p1.x - center.x, p1.y - center.y);
-    const ccw = (center.x - p1.x) * (p3.y - p1.y) - (center.y - p1.y) * (p3.x - p1.x) > 0;
-    return { cx: center.x, cy: center.y, radius: r, startAngle: Math.atan2(p1.y - center.y, p1.x - center.x), endAngle: Math.atan2(p3.y - center.y, p3.x - center.x), ccw };
+    const ccw =
+      (center.x - p1.x) * (p3.y - p1.y) - (center.y - p1.y) * (p3.x - p1.x) > 0;
+    return {
+      cx: center.x,
+      cy: center.y,
+      radius: r,
+      startAngle: Math.atan2(p1.y - center.y, p1.x - center.x),
+      endAngle: Math.atan2(p3.y - center.y, p3.x - center.x),
+      ccw,
+    };
   };
 
   const calcSER = (p1, p2, mouse) => {
@@ -190,11 +284,22 @@ const CncWorkspace = () => {
     const mid = { x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2 };
     const h = Math.hypot(mouse.x - mid.x, mouse.y - mid.y) || 1e-5;
     const r = h / 2 + (d * d) / (8 * h);
-    const side = (p2.x - p1.x) * (mouse.y - p1.y) - (p2.y - p1.y) * (mouse.x - p1.x) > 0 ? 1 : -1;
+    const side =
+      (p2.x - p1.x) * (mouse.y - p1.y) - (p2.y - p1.y) * (mouse.x - p1.x) > 0
+        ? 1
+        : -1;
     const angle = Math.atan2(p2.y - p1.y, p2.x - p1.x);
     const cDist = Math.sqrt(Math.max(0, r * r - (d / 2) ** 2));
-    const cx = mid.x + cDist * Math.sin(angle) * side, cy = mid.y - cDist * Math.cos(angle) * side;
-    return { cx, cy, radius: r, startAngle: Math.atan2(p1.y - cy, p1.x - cx), endAngle: Math.atan2(p2.y - cy, p2.x - cx), ccw: side > 0 };
+    const cx = mid.x + cDist * Math.sin(angle) * side,
+      cy = mid.y - cDist * Math.cos(angle) * side;
+    return {
+      cx,
+      cy,
+      radius: r,
+      startAngle: Math.atan2(p1.y - cy, p1.x - cx),
+      endAngle: Math.atan2(p2.y - cy, p2.x - cx),
+      ccw: side > 0,
+    };
   };
 
   const drawCross = (ctx, x, y, size, color, lw = 1) => {
@@ -203,30 +308,57 @@ const CncWorkspace = () => {
     ctx.strokeStyle = color;
     ctx.lineWidth = lw / cameraRef.current.zoom;
     ctx.beginPath();
-    ctx.moveTo(x - size / cameraRef.current.zoom, y); ctx.lineTo(x + size / cameraRef.current.zoom, y);
-    ctx.moveTo(x, y - size / cameraRef.current.zoom); ctx.lineTo(x, y + size / cameraRef.current.zoom);
-    ctx.stroke(); ctx.restore();
+    ctx.moveTo(x - size / cameraRef.current.zoom, y);
+    ctx.lineTo(x + size / cameraRef.current.zoom, y);
+    ctx.moveTo(x, y - size / cameraRef.current.zoom);
+    ctx.lineTo(x, y + size / cameraRef.current.zoom);
+    ctx.stroke();
+    ctx.restore();
   };
 
   const solidifyFeatures = () => {
     if (!activePath) return;
     saveState();
-    setPaths((prev) => prev.map((path) => path.id === activePath.id ? { ...path, points: getVisualPoints(path.points).map((p) => ({ ...p, c: 0, r: 0 })) } : path ));
+    setPaths((prev) =>
+      prev.map((path) =>
+        path.id === activePath.id
+          ? {
+              ...path,
+              points: getVisualPoints(path.points).map((p) => ({
+                ...p,
+                c: 0,
+                r: 0,
+              })),
+            }
+          : path
+      )
+    );
   };
 
   const genGCode = () => {
-    if (!activePath || activePath.points.length < 2) { alert("請畫出路徑！"); return; }
+    if (!activePath || !activePath.points || activePath.points.length < 2) {
+      alert("請畫出或選定一條包含2點以上的加工路徑！");
+      return;
+    }
     const vPts = getVisualPoints(activePath.points);
+    if (!vPts || vPts.length === 0) return;
     const startPt = vPts[0];
     const safeZ = Math.max(startPt.x, stock.face) + cam.safeDist;
     const safeX = isInner ? stock.id - cam.safeDist : stock.od + cam.safeDist;
 
-    let g = `O2000 (CNC MASTER)\nG50 S${cam.g50}\nT${toolConfig.code} M03 G96 S${cam.vc}\nG00 X${safeX.toFixed(3)} Z${safeZ.toFixed(3)} M08\n`;
-    g += `G71 U${cam.doc} R0.5\nG71 P10 Q20 U${isInner ? -cam.allowX : cam.allowX} W${cam.allowZ} F${cam.feed}\nN10 G00 X${(-startPt.y * 2).toFixed(3)}\n`;
+    let g = `O2000 (CNC GEMINI MASTER)\nG50 S${cam.g50}\nT${
+      toolConfig.code
+    } M03 G96 S${cam.vc}\nG00 X${safeX.toFixed(3)} Z${safeZ.toFixed(3)} M08\n`;
+    g += `G71 U${cam.doc} R0.5\nG71 P10 Q20 U${
+      isInner ? -cam.allowX : cam.allowX
+    } W${cam.allowZ} F${cam.feed}\nN10 G00 X${(-startPt.y * 2).toFixed(3)}\n`;
     vPts.forEach((pt, i) => {
       if (i === 0) return;
-      const cmd = pt.type === "arc" ? (pt.ccw ? "G03" : "G02") : "G01";
-      g += `${cmd} X${(-pt.y * 2).toFixed(3)} Z${pt.x.toFixed(3)}${pt.type === "arc" ? ` R${pt.radius.toFixed(3)}` : ""}\n`;
+      const cmd =
+        pt.type === "arc" ? (pt.ccw ? "G03" : "G02") : pt.type || "G01";
+      g += `${cmd} X${(-pt.y * 2).toFixed(3)} Z${pt.x.toFixed(3)}${
+        pt.type === "arc" ? ` R${pt.radius.toFixed(3)}` : ""
+      }\n`;
     });
     g += `N20 G01 X${isInner ? stock.id - 2 : stock.od + 2}\nM30`;
     setGcode(g);
@@ -254,36 +386,89 @@ const CncWorkspace = () => {
       ctx.translate(cameraRef.current.x, cameraRef.current.y);
       ctx.scale(cameraRef.current.zoom, cameraRef.current.zoom);
 
-      // 背景工件
+      if (bgImage) {
+        ctx.globalAlpha = bgOpacity;
+        ctx.drawImage(bgImage, -200, -200, 400, 400);
+        ctx.globalAlpha = 1;
+      }
       ctx.fillStyle = "rgba(255,255,255,0.05)";
-      ctx.fillRect(-stock.length, -stock.od / 2, stock.length + Number(stock.face), stock.od);
+      ctx.fillRect(
+        -stock.length,
+        -stock.od / 2,
+        stock.length + Number(stock.face),
+        stock.od // 修改：高度應為整個外徑
+      );
 
-      // 網格與軸線
-      ctx.strokeStyle = "#333"; ctx.lineWidth = 1 / cameraRef.current.zoom;
+      ctx.strokeStyle = "#333";
+      ctx.lineWidth = 1 / cameraRef.current.zoom;
       ctx.beginPath();
-      for (let i = -500; i <= 500; i += 50) { ctx.moveTo(i, -500); ctx.lineTo(i, 500); ctx.moveTo(-500, i); ctx.lineTo(500, i); }
+      for (let i = -500; i <= 500; i += 50) {
+        ctx.moveTo(i, -500);
+        ctx.lineTo(i, 500);
+        ctx.moveTo(-500, i);
+        ctx.lineTo(500, i);
+      }
       ctx.stroke();
-      ctx.strokeStyle = "#ff5722"; ctx.beginPath(); ctx.moveTo(0, -500); ctx.lineTo(0, 500); ctx.stroke();
-      ctx.strokeStyle = "#007bff"; ctx.beginPath(); ctx.moveTo(-500, 0); ctx.lineTo(500, 0); ctx.stroke();
+      ctx.strokeStyle = "#ff5722";
+      ctx.beginPath();
+      ctx.moveTo(0, -500);
+      ctx.lineTo(0, 500);
+      ctx.stroke();
+      ctx.strokeStyle = "#007bff";
+      ctx.beginPath();
+      ctx.moveTo(-500, 0);
+      ctx.lineTo(500, 0);
+      ctx.stroke();
       drawCross(ctx, 0, 0, 20, "red", 2);
 
       visualPaths.forEach((p, idx) => {
+        if (!p?.points || !Array.isArray(p.points)) return;
         const isActive = p.id === activePath?.id;
         ctx.lineWidth = isActive ? 2.5 / cameraRef.current.zoom : 1.5 / cameraRef.current.zoom;
         ctx.strokeStyle = isActive ? "#00ff00" : "#4a824a";
         ctx.beginPath();
         p.points.forEach((pt, i) => {
+          if (!pt || typeof pt.x === "undefined" || typeof pt.y === "undefined")
+            return;
           if (i === 0) ctx.moveTo(pt.x, pt.y);
-          else if (pt.type === "arc") ctx.arc(pt.cx, pt.cy, pt.radius, pt.startAngle, pt.endAngle, !pt.ccw);
+          else if (pt.type === "arc")
+            ctx.arc(
+              pt.cx,
+              pt.cy,
+              pt.radius,
+              pt.startAngle,
+              pt.endAngle,
+              !pt.ccw
+            );
           else ctx.lineTo(pt.x, pt.y);
         });
         ctx.stroke();
+
+        const cPts = visualCompPaths[idx]?.points;
+        if (cPts && Array.isArray(cPts) && cPts.length > 0 && !interactionRef.current.sim.active) {
+          ctx.beginPath();
+          ctx.strokeStyle = isActive ? toolConfig.color : "rgba(0, 255, 255, 0.3)";
+          ctx.setLineDash([4 / cameraRef.current.zoom]);
+          cPts.forEach((pt, i) => {
+            if (!pt || typeof pt.x === "undefined" || typeof pt.y === "undefined") return;
+            if (i === 0) ctx.moveTo(pt.x, pt.y);
+            else if (pt.type === "arc" && pt.radius)
+              ctx.arc(pt.cx, pt.cy, pt.radius, pt.startAngle, pt.endAngle, !pt.ccw);
+            else ctx.lineTo(pt.x, pt.y);
+          });
+          ctx.stroke();
+          ctx.setLineDash([]);
+        }
       });
 
       if (mode === "TRIM" && interactionRef.current.trimPath.length > 0) {
-        ctx.strokeStyle = "#ff4444"; ctx.lineWidth = 2 / cameraRef.current.zoom;
+        ctx.strokeStyle = "#ff4444";
+        ctx.lineWidth = 2 / cameraRef.current.zoom;
         ctx.beginPath();
-        interactionRef.current.trimPath.forEach((p, i) => i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y));
+        interactionRef.current.trimPath.forEach((p, i) => {
+          if (p && typeof p.x !== "undefined")
+            i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y);
+        });
         ctx.stroke();
       }
 
@@ -291,23 +476,32 @@ const CncWorkspace = () => {
       requestAnimationFrame(render);
     };
     render();
-  }, [visualPaths, activePath, stock, mode]);
+  }, [visualPaths, activePath, stock, mode, toolConfig, isInner]);
 
   // --- 事件處理 ---
   const handleMouseDown = (e) => {
-    if (e.button === 2) { interactionRef.current.continuous = false; return; }
+    if (e.button === 2) {
+      interactionRef.current.continuous = false;
+      interactionRef.current.circleStart = null;
+      interactionRef.current.arcPts = [];
+      setPaths((p) => [...p]);
+      return;
+    }
     const rect = canvasRef.current.getBoundingClientRect();
-    const snapPt = {
+    const rawPt = {
       x: (e.clientX - rect.left - cameraRef.current.x) / cameraRef.current.zoom,
       y: (e.clientY - rect.top - cameraRef.current.y) / cameraRef.current.zoom,
     };
+
+    let snapPt = rawPt;
+    if (Math.hypot(rawPt.x, rawPt.y) < 12 / cameraRef.current.zoom) snapPt = { x: 0, y: 0 };
 
     if (mode === "PAN") {
       interactionRef.current.isDragging = true;
       interactionRef.current.lastMouse = { x: e.clientX, y: e.clientY };
     } else if (mode === "TRIM") {
       interactionRef.current.isDragging = true;
-      interactionRef.current.trimPath = [snapPt];
+      interactionRef.current.trimPath = [rawPt];
     } else if (mode === "DRAW_LINE") {
       saveState();
       setPaths((prev) => {
@@ -366,11 +560,14 @@ const CncWorkspace = () => {
             const p1 = path.points[i], p2 = path.points[i + 1];
             let cut = false;
             for (let j = 0; j < tPath.length - 1; j++) {
-              // ✅ 此處現在可以正確存取到外部定義的 checkIntersect
+              // ✅ 修正點：此處現在可以存取到外層定義的 checkIntersect
               if (checkIntersect(p1, p2, tPath[j], tPath[j + 1], true)) { cut = true; break; }
             }
             if (cut) {
-              if (cur.length > 0) { newPaths.push({ id: Math.random(), points: [...cur, p1] }); cur = []; }
+              if (cur.length > 0) {
+                newPaths.push({ id: Math.random(), points: [...cur, p1] });
+                cur = [];
+              }
             } else {
               cur.push(p1);
               if (i === path.points.length - 2) cur.push(p2);
@@ -412,4 +609,6 @@ const CncWorkspace = () => {
   );
 };
 
-export default function App() { return <CncWorkspace />; }
+export default function App() {
+  return <CncWorkspace />;
+}

@@ -21,8 +21,6 @@ const CncWorkspace = () => {
   const [selectedPathId, setSelectedPathId] = useState(null);
   
   const [selRange, setSelRange] = useState({ pathId: null, p1: null, p2: null });
-
-  // 🔥 新增：用於整段路徑縮放與平移的狀態
   const [transform, setTransform] = useState({ dz: "", dx: "", scale: "1" });
 
   const [isInner, setIsInner] = useState(false);
@@ -72,7 +70,6 @@ const CncWorkspace = () => {
     sim: { active: false, progress: 0, pts: [] },
   });
 
-  // 🔥 優化：儲存歷史紀錄時，避免重複寫入相同狀態
   const saveState = () => {
     setHistory((prev) => {
       const curStr = JSON.stringify(paths);
@@ -110,7 +107,6 @@ const CncWorkspace = () => {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [paths]);
 
-  // --- 尺寸與座標轉換處理 ---
   const applyTransform = () => {
     saveState();
     setPaths((prev) => {
@@ -529,6 +525,7 @@ const CncWorkspace = () => {
     setGcode(g);
   };
 
+  // 🔥 升級版：完整的加工切層模擬
   const startSimulation = () => {
     if (interactionRef.current.sim.active) {
       interactionRef.current.sim.active = false;
@@ -539,60 +536,113 @@ const CncWorkspace = () => {
       alert("請選取一條欲模擬的加工區段！");
       return;
     }
-    
+
     let sPts = [];
     const activeCompPts = camCompPts;
-    const safeZ = Math.max(activeCompPts[0].x, stock.face) + cam.safeDist;
+
+    // 1. 將所有圓弧「打平」成微小線段，以便進行極度精確的水平碰撞偵測
+    let flatPts = [];
+    for (let i = 0; i < activeCompPts.length; i++) {
+      let pt = activeCompPts[i];
+      if (pt.type === "arc" && i > 0) {
+        let steps = 15; // 圓弧切割的精細度
+        let aStart = pt.startAngle;
+        let aEnd = pt.endAngle;
+        // 確保角度順著繪圖方向
+        if (pt.drawCCW && aStart > aEnd) aEnd += 2 * Math.PI;
+        if (!pt.drawCCW && aStart < aEnd) aStart += 2 * Math.PI;
+
+        for (let j = 1; j <= steps; j++) {
+          let t = j / steps;
+          let a = aStart + (aEnd - aStart) * t;
+          flatPts.push({
+            x: pt.cx + pt.radius * Math.cos(a),
+            y: pt.cy + pt.radius * Math.sin(a),
+          });
+        }
+      } else {
+        flatPts.push(pt);
+      }
+    }
+
+    // 計算安全距離與毛胚邊界
+    const safeZ = Math.max(...flatPts.map((p) => p.x)) + cam.safeDist;
+    const minZ = Math.min(...flatPts.map((p) => p.x)); // 整個圖形的最左側極限
     const startDia = isInner ? stock.id : stock.od;
-    const safeY = -(startDia + (isInner ? -cam.safeDist : cam.safeDist)) / 2;
+    const safeY = -(startDia + (isInner ? -cam.safeDist * 2 : cam.safeDist * 2)) / 2;
+    const startY = -startDia / 2;
+
+    const targetY = isInner
+      ? Math.max(...flatPts.map((p) => p.y || 0))
+      : Math.min(...flatPts.map((p) => p.y || 0));
 
     sPts.push({ x: safeZ, y: safeY, type: "G00" });
-    let currentY = -startDia / 2;
-    const targetY = isInner
-      ? Math.max(...activeCompPts.map((p) => p.y || 0))
-      : Math.min(...activeCompPts.map((p) => p.y || 0));
-    let passes = 0;
 
+    let currentY = startY;
+    let passes = 0;
+    const maxPasses = 300;
+
+    // 2. 粗車循環 (G71 風格)
     while (
       (isInner ? currentY < targetY : currentY > targetY) &&
-      passes < 150
+      passes < maxPasses
     ) {
       currentY += isInner ? cam.doc / 2 : -cam.doc / 2;
-      if ((isInner && currentY > targetY) || (!isInner && currentY < targetY))
-        currentY = targetY;
 
-      let endZ = activeCompPts[activeCompPts.length - 1].x;
-      for (let i = 0; i < activeCompPts.length - 1; i++) {
-        let p1 = activeCompPts[i],
-          p2 = activeCompPts[i + 1];
+      if ((isInner && currentY > targetY) || (!isInner && currentY < targetY)) {
+        currentY = targetY;
+      }
+
+      let intersectZs = [];
+      for (let i = 0; i < flatPts.length - 1; i++) {
+        let p1 = flatPts[i], p2 = flatPts[i + 1];
         if (!p1 || !p2) continue;
-        if (
-          (currentY >= p1.y && currentY <= p2.y) ||
-          (currentY <= p1.y && currentY >= p2.y)
-        ) {
-          if (p1.y !== p2.y)
-            endZ = p1.x + ((currentY - p1.y) / (p2.y - p1.y)) * (p2.x - p1.x);
-          break;
+
+        const minY = Math.min(p1.y, p2.y);
+        const maxY = Math.max(p1.y, p2.y);
+
+        if (currentY >= minY && currentY <= maxY) {
+          if (p1.y !== p2.y) {
+            const z = p1.x + ((currentY - p1.y) / (p2.y - p1.y)) * (p2.x - p1.x);
+            intersectZs.push(z);
+          } else {
+            intersectZs.push(Math.max(p1.x, p2.x));
+          }
         }
       }
-      sPts.push({ x: safeZ, y: currentY, type: "G00" });
-      sPts.push({ x: endZ, y: currentY, type: "G01" });
-      sPts.push({
-        x: endZ + 0.5,
-        y: currentY + (isInner ? -0.5 : 0.5),
-        type: "G01",
-      });
-      sPts.push({
-        x: safeZ,
-        y: currentY + (isInner ? -0.5 : 0.5),
-        type: "G00",
-      });
+
+      // 找出最右側的碰撞點（模擬第一把接觸到的邊界）
+      let endZ = minZ; // 預設切到最左側極限 (例如在切大毛胚皮的時候)
+      if (intersectZs.length > 0) {
+        endZ = Math.max(...intersectZs);
+      }
+
+      // 如果有需要切除的實體才進行此層的切削
+      if (endZ < safeZ) {
+        sPts.push({ x: safeZ, y: currentY, type: "G00" }); // 快移至下刀點
+        sPts.push({ x: endZ, y: currentY, type: "G01" });  // 直線切削
+        
+        // 45度角退刀
+        const retractDir = isInner ? -0.5 : 0.5;
+        sPts.push({ x: endZ + 0.5, y: currentY + retractDir, type: "G01" });
+        sPts.push({ x: safeZ, y: currentY + retractDir, type: "G00" }); // 快速退回安全點
+      }
       passes++;
     }
+
+    // 3. 精車循環 (Profile Pass)
     sPts.push({ x: safeZ, y: activeCompPts[0].y, type: "G00" });
     activeCompPts.forEach((pt) => sPts.push({ ...pt, type: pt.type || "G01" }));
-    sPts.push({ x: safeZ, y: safeY, type: "G00" });
     
+    // 結尾退刀
+    const lastPt = activeCompPts[activeCompPts.length - 1];
+    sPts.push({ 
+      x: lastPt.x + 1, 
+      y: lastPt.y + (isInner ? -1 : 1), 
+      type: "G01" 
+    });
+    sPts.push({ x: safeZ, y: safeY, type: "G00" });
+
     interactionRef.current.sim = { active: true, progress: 0, pts: sPts };
   };
 
@@ -875,7 +925,7 @@ const CncWorkspace = () => {
 
       if (interactionRef.current.sim.active) {
         let sim = interactionRef.current.sim;
-        sim.progress += 0.15;
+        sim.progress += 0.4; // 🔥 加速模擬播放速度
         if (sim.progress >= sim.pts.length - 1) {
           sim.progress = sim.pts.length - 1;
           sim.active = false;
@@ -2072,7 +2122,6 @@ const CncWorkspace = () => {
           </div>
         </div>
 
-        {/* 🔥 新增：尺寸與座標編輯面板 */}
         {activePath && (
           <div style={{ marginBottom: "15px", background: "#111", padding: "10px", borderRadius: "4px", border: "1px solid #333" }}>
             <h4 style={{ color: "#0dcaf0", fontSize: "13px", margin: "0 0 10px 0" }}>📏 尺寸與座標編輯</h4>

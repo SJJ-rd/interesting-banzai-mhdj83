@@ -135,6 +135,22 @@ const CncWorkspace = () => {
             nx *= -1;
             ny *= -1;
           }
+          // --- 核心幾何算法：檢查線段相交並返回交點 ---
+  const checkIntersect = (p1, p2, p3, p4, isTrimMode = false) => {
+    const den = (p4.y - p3.y) * (p2.x - p1.x) - (p4.x - p3.x) * (p2.y - p1.y);
+    if (Math.abs(den) < 1e-10) return null; // 平行
+
+    const ua = ((p4.x - p3.x) * (p1.y - p3.y) - (p4.y - p3.y) * (p1.x - p3.x)) / den;
+    const ub = ((p2.x - p1.x) * (p1.y - p3.y) - (p2.y - p1.y) * (p1.x - p3.x)) / den;
+
+    if (ua >= 0 && ua <= 1 && ub >= 0 && ub <= 1) {
+      return {
+        x: p1.x + ua * (p2.x - p1.x),
+        y: p1.y + ua * (p2.y - p1.y)
+      };
+    }
+    return null;
+  };
           const cx = pA.x + nx * r,
             cy = pA.y + ny * r;
           const pB_x = pt.x + v2.x * d,

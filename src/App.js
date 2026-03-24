@@ -1,5 +1,16 @@
 import React, { useEffect, useRef, useState, useMemo } from "react";
-
+// ✅ 全局核心幾何算法：放在這裡，確保全案所有功能（尤其是修剪）都能抓到它
+const checkIntersect = (p1, p2, p3, p4, isTrimMode = false) => {
+  if (!p1 || !p2 || !p3 || !p4 || typeof p1.x === "undefined" || typeof p3.x === "undefined") return null;
+  const den = (p4.y - p3.y) * (p2.x - p1.x) - (p4.x - p3.x) * (p2.y - p1.y);
+  if (Math.abs(den) < 1e-10) return null; // 平行
+  const ua = ((p4.x - p3.x) * (p1.y - p3.y) - (p4.y - p3.y) * (p1.x - p3.x)) / den;
+  const ub = ((p2.x - p1.x) * (p1.y - p3.y) - (p2.y - p1.y) * (p1.x - p3.x)) / den;
+  if (ua >= 0 && ua <= 1 && ub >= 0 && ub <= 1) {
+    return { x: p1.x + ua * (p2.x - p1.x), y: p1.y + ua * (p2.y - p1.y) };
+  }
+  return null;
+};
 const CncWorkspace = () => {
   const [mode, setMode] = useState("DRAW_LINE");
   const [lineMode, setLineMode] = useState("G01");
@@ -59,6 +70,77 @@ const CncWorkspace = () => {
       ...prev.slice(-29),
       JSON.parse(JSON.stringify(paths)),
     ]);
+  const handleUndo = () => {
+    setHistory((prev) => {
+      if (prev.length === 0) return prev;
+      const newH = [...prev];
+      setPaths(newH.pop());
+      return newH;
+    });
+    interactionRef.current.continuous = false;
+    interactionRef.current.circleStart = null;
+    interactionRef.current.arcPts = [];
+  };
+
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      if (e.key === "Escape") {
+        interactionRef.current.continuous = false;
+        interactionRef.current.circleStart = null;
+        interactionRef.current.arcPts = [];
+        setPaths((p) => [...p]);
+      }
+      if (e.key === "z" && (e.ctrlKey || e.metaKey)) {
+        e.preventDefault();
+        handleUndo();
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [paths]);
+
+  // --- 幾何計算引擎 (保留您原本 1100 多行的所有邏輯) ---
+  const getVisualPoints = (pts) => {
+    if (!pts || !Array.isArray(pts)) return [];
+    let res = [];
+    for (let i = 0; i < pts.length; i++) {
+      const pt = pts[i];
+      if (!pt || typeof pt.x === "undefined" || typeof pt.y === "undefined") continue;
+
+      if ((pt.c > 0 || pt.r > 0) && i > 0 && i < pts.length - 1) {
+        const p = pts[i - 1], n = pts[i + 1];
+        if (!p || !n) { res.push(pt); continue; }
+
+        const v1 = { x: p.x - pt.x, y: p.y - pt.y }, v2 = { x: n.x - pt.x, y: n.y - pt.y };
+        const l1 = Math.hypot(v1.x, v1.y), l2 = Math.hypot(v2.x, v2.y);
+        if (l1 < 0.001 || l2 < 0.001) { res.push(pt); continue; }
+        v1.x /= l1; v1.y /= l1; v2.x /= l2; v2.y /= l2;
+
+        if (pt.c > 0) {
+          const c = parseFloat(pt.c);
+          res.push({ ...pt, x: pt.x + v1.x * c, y: pt.y + v1.y * c });
+          res.push({ x: pt.x + v2.x * c, y: pt.y + v2.y * c, type: "G01" });
+        } else if (pt.r > 0) {
+          const r = parseFloat(pt.r);
+          const dot = v1.x * v2.x + v1.y * v2.y;
+          const angle = Math.acos(Math.max(-1, Math.min(1, dot)));
+          const d = r / Math.tan(angle / 2);
+          const pA = { x: pt.x + v1.x * d, y: pt.y + v1.y * d, type: pt.type };
+          const ccw = v1.x * v2.y - v1.y * v2.x > 0;
+          let nx = -v1.y, ny = v1.x;
+          if (nx * v2.x + ny * v2.y < 0) { nx *= -1; ny *= -1; }
+          const cx = pA.x + nx * r, cy = pA.y + ny * r;
+          const pB_x = pt.x + v2.x * d, pB_y = pt.y + v2.y * d;
+          res.push(pA, {
+            x: pB_x, y: pB_y, type: "arc", radius: r, ccw, cx, cy,
+            startAngle: Math.atan2(pA.y - cy, pA.x - cx),
+            endAngle: Math.atan2(pB_y - cy, pB_x - cx),
+          });
+        }
+      } else res.push({ ...pt });
+    }
+    return res;
+  };
   const handleUndo = () => {
     setHistory((prev) => {
       if (prev.length === 0) return prev;

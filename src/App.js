@@ -20,8 +20,10 @@ const CncWorkspace = () => {
   const [history, setHistory] = useState([]);
   const [selectedPathId, setSelectedPathId] = useState(null);
   
-  // 🔥 新增：儲存選取範圍的起始與結束點索引
   const [selRange, setSelRange] = useState({ pathId: null, p1: null, p2: null });
+
+  // 🔥 新增：用於整段路徑縮放與平移的狀態
+  const [transform, setTransform] = useState({ dz: "", dx: "", scale: "1" });
 
   const [isInner, setIsInner] = useState(false);
   const [isOrtho, setIsOrtho] = useState(false);
@@ -70,11 +72,14 @@ const CncWorkspace = () => {
     sim: { active: false, progress: 0, pts: [] },
   });
 
-  const saveState = () =>
-    setHistory((prev) => [
-      ...prev.slice(-29),
-      JSON.parse(JSON.stringify(paths)),
-    ]);
+  // 🔥 優化：儲存歷史紀錄時，避免重複寫入相同狀態
+  const saveState = () => {
+    setHistory((prev) => {
+      const curStr = JSON.stringify(paths);
+      if (prev.length > 0 && JSON.stringify(prev[prev.length - 1]) === curStr) return prev;
+      return [...prev.slice(-29), JSON.parse(curStr)];
+    });
+  };
     
   const handleUndo = () => {
     setHistory((prev) => {
@@ -104,6 +109,57 @@ const CncWorkspace = () => {
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [paths]);
+
+  // --- 尺寸與座標轉換處理 ---
+  const applyTransform = () => {
+    saveState();
+    setPaths((prev) => {
+      const n = JSON.parse(JSON.stringify(prev));
+      const path = n.find((p) => p.id === activePath?.id);
+      if (!path) return n;
+      const s = parseFloat(transform.scale);
+      const dz = parseFloat(transform.dz) || 0;
+      const dx = parseFloat(transform.dx) || 0;
+      const scaleVal = isNaN(s) ? 1 : s;
+
+      path.points.forEach((pt) => {
+        pt.x = pt.x * scaleVal + dz;
+        pt.y = pt.y * scaleVal - (dx / 2);
+      });
+      return n;
+    });
+    setTransform({ dz: "", dx: "", scale: "1" });
+  };
+
+  const handlePointChange = (pathId, ptIdx, axis, val) => {
+    setPaths((prev) => {
+      const n = JSON.parse(JSON.stringify(prev));
+      const path = n.find((p) => p.id === pathId);
+      if (!path) return n;
+      const pts = path.points;
+      const pt = pts[ptIdx];
+      if (!pt) return n;
+
+      const isClosed = pts.length > 2 && Math.hypot(pts[0].x - pts[pts.length-1].x, pts[0].y - pts[pts.length-1].y) < 0.001;
+
+      const numVal = parseFloat(val);
+      if (!isNaN(numVal)) {
+        if (axis === "Z") pt.x = numVal;
+        if (axis === "X") pt.y = -numVal / 2;
+      }
+
+      if (isClosed) {
+        if (ptIdx === 0) {
+          pts[pts.length - 1].x = pts[0].x;
+          pts[pts.length - 1].y = pts[0].y;
+        } else if (ptIdx === pts.length - 1) {
+          pts[0].x = pts[pts.length - 1].x;
+          pts[0].y = pts[pts.length - 1].y;
+        }
+      }
+      return n;
+    });
+  };
 
   // --- 幾何計算引擎 ---
   const getVisualPoints = (pts) => {
@@ -235,17 +291,14 @@ const CncWorkspace = () => {
     [paths, selectedPathId]
   );
 
-  // 🔥 新增：擷取出真正要用來計算加工的區段 (CAM Path)
   const camPathPts = useMemo(() => {
     if (!activePath || !activePath.points) return [];
-    // 如果有自訂的範圍選取，就只截取該段 Base 點來計算
     if (selRange.pathId === activePath.id && selRange.p1 !== null && selRange.p2 !== null) {
       const min = Math.min(selRange.p1, selRange.p2);
       const max = Math.max(selRange.p1, selRange.p2);
       const sliced = activePath.points.slice(min, max + 1);
       return getVisualPoints(sliced);
     }
-    // 否則就回傳整條完整路徑
     return getVisualPoints(activePath.points);
   }, [activePath, selRange]);
 
@@ -291,7 +344,6 @@ const CncWorkspace = () => {
     [visualPaths, toolConfig.r, isInner]
   );
   
-  // 🔥 新增：擷取出加工範圍專屬的刀補路徑 (CAM Comp Path)
   const camCompPts = useMemo(() => {
     return getOffsetPoints(camPathPts, toolConfig.r, isInner);
   }, [camPathPts, toolConfig.r, isInner]);
@@ -606,7 +658,6 @@ const CncWorkspace = () => {
         
         const hasSubSelection = isActive && selRange.p1 !== null && selRange.p2 !== null;
 
-        // 🔥 繪製完整路徑底色 (如果有選取範圍，整體變暗綠色)
         ctx.lineWidth = (isActive || isHovered) ? 2.5 / cameraRef.current.zoom : 1.5 / cameraRef.current.zoom;
         ctx.strokeStyle = isActive ? (hasSubSelection ? "#1b401b" : "#00ff00") : isHovered ? "#bfffbf" : "#4a824a";
         
@@ -619,7 +670,6 @@ const CncWorkspace = () => {
         });
         ctx.stroke();
 
-        // 🔥 繪製完整刀補路徑 (稍微暗色當參考)
         const cPts = visualCompPaths[idx]?.points;
         if (cPts && Array.isArray(cPts) && cPts.length > 0 && !interactionRef.current.sim.active) {
           ctx.beginPath();
@@ -636,12 +686,11 @@ const CncWorkspace = () => {
         }
       });
 
-      // 🔥 高亮選取的加工範圍 (Bright Green / Bright Cyan)
       if (activePath && camPathPts.length > 0) {
         const hasSubSelection = selRange.pathId === activePath.id && selRange.p1 !== null && selRange.p2 !== null;
         if (hasSubSelection) {
           ctx.lineWidth = 3 / cameraRef.current.zoom;
-          ctx.strokeStyle = "#00ff00"; // 明亮的亮綠色
+          ctx.strokeStyle = "#00ff00"; 
           ctx.beginPath();
           camPathPts.forEach((pt, i) => {
             if (i === 0) ctx.moveTo(pt.x, pt.y);
@@ -673,7 +722,6 @@ const CncWorkspace = () => {
           if (!pt || typeof pt.x === "undefined") return;
           if (isClosed && i === p.points.length - 1) return; 
 
-          // 🔥 標示出選取範圍的端點
           const isSelectedEndPt = selRange.pathId === p.id && (selRange.p1 === i || selRange.p2 === i);
           
           drawCross(ctx, pt.x, pt.y, isSelectedEndPt ? 10 : 5, isSelectedEndPt ? "#ffeb3b" : "#fff", isSelectedEndPt ? 2 : 1);
@@ -1011,24 +1059,22 @@ const CncWorkspace = () => {
       interactionRef.current.isDragging = true;
       interactionRef.current.lastMouse = { x: e.clientX, y: e.clientY };
     } else if (mode === "SELECT") {
-      // 🔥 選取模式：更新點擊範圍的邏輯
       const hId = interactionRef.current.hoveredPathId;
       const hIdx = interactionRef.current.hoveredPtIdx;
       if (hId !== null && hIdx !== null) {
         setSelectedPathId(hId);
         setSelRange((prev) => {
           if (prev.pathId !== hId) {
-            return { pathId: hId, p1: hIdx, p2: null }; // 點選新的路徑點，成為起點
+            return { pathId: hId, p1: hIdx, p2: null }; 
           } else if (prev.p1 !== null && prev.p2 !== null) {
-            return { pathId: hId, p1: hIdx, p2: null }; // 已經有選好範圍，重新設定起點
+            return { pathId: hId, p1: hIdx, p2: null }; 
           } else if (prev.p1 !== null && prev.p2 === null) {
-            if (prev.p1 === hIdx) return { pathId: hId, p1: null, p2: null }; // 同個點點兩次，取消子範圍選取
-            return { ...prev, p2: hIdx }; // 設定終點
+            if (prev.p1 === hIdx) return { pathId: hId, p1: null, p2: null }; 
+            return { ...prev, p2: hIdx }; 
           }
           return prev;
         });
       } else {
-        // 點擊空白處，取消選取
         setSelectedPathId(null);
         setSelRange({ pathId: null, p1: null, p2: null });
       }
@@ -1188,7 +1234,7 @@ const CncWorkspace = () => {
             if (pt && Math.hypot(rawPt.x - pt.x, rawPt.y - pt.y) < minD) {
               minD = Math.hypot(rawPt.x - pt.x, rawPt.y - pt.y);
               foundId = p.id;
-              foundPtIdx = idx; // 🔥 記憶被 Hover 到的點 Index
+              foundPtIdx = idx;
             }
           });
         }
@@ -1426,7 +1472,6 @@ const CncWorkspace = () => {
             </button>
           </div>
           
-          {/* 🔥 增加介面文字引導 */}
           {mode === "SELECT" && (
             <span style={{ color: "#ffeb3b", fontSize: "12px", alignSelf: "center", marginLeft: "5px" }}>
                💡 點擊兩端點定義範圍，點空白處取消
@@ -2026,6 +2071,50 @@ const CncWorkspace = () => {
             </select>
           </div>
         </div>
+
+        {/* 🔥 新增：尺寸與座標編輯面板 */}
+        {activePath && (
+          <div style={{ marginBottom: "15px", background: "#111", padding: "10px", borderRadius: "4px", border: "1px solid #333" }}>
+            <h4 style={{ color: "#0dcaf0", fontSize: "13px", margin: "0 0 10px 0" }}>📏 尺寸與座標編輯</h4>
+            
+            <div style={{ display: "flex", gap: "5px", marginBottom: "10px" }}>
+              <input type="number" placeholder="Z偏移" value={transform.dz} onChange={e => setTransform({...transform, dz: e.target.value})} style={{ width: "33%", background: "#222", color: "#fff", border: "none", padding: "5px", fontSize: "11px" }} />
+              <input type="number" placeholder="X偏移" value={transform.dx} onChange={e => setTransform({...transform, dx: e.target.value})} style={{ width: "33%", background: "#222", color: "#fff", border: "none", padding: "5px", fontSize: "11px" }} />
+              <input type="number" placeholder="比例縮放" value={transform.scale} onChange={e => setTransform({...transform, scale: e.target.value})} style={{ width: "33%", background: "#222", color: "#fff", border: "none", padding: "5px", fontSize: "11px" }} />
+            </div>
+            <button onClick={applyTransform} style={{ width: "100%", background: "#0dcaf0", color: "#000", border: "none", padding: "5px", borderRadius: "4px", marginBottom: "10px", fontWeight: "bold", cursor: "pointer" }}>套用整段變換</button>
+
+            <div style={{ maxHeight: "150px", overflowY: "auto", paddingRight: "5px" }}>
+              {activePath.points.map((pt, idx) => (
+                <div key={idx} style={{ display: "flex", gap: "5px", marginBottom: "5px", alignItems: "center" }}>
+                  <span style={{ color: "#888", fontSize: "11px", width: "25px" }}>P{idx}</span>
+                  <div style={{ display: "flex", flex: 1, alignItems: "center", gap: "2px" }}>
+                    <span style={{ color: "#ccc", fontSize: "10px" }}>Z</span>
+                    <input
+                      type="number"
+                      step="any"
+                      value={pt.x !== undefined ? Number(pt.x).toString() : ""}
+                      onFocus={saveState}
+                      onChange={(e) => handlePointChange(activePath.id, idx, 'Z', e.target.value)}
+                      style={{ width: "100%", background: "#222", color: "#fff", border: "1px solid #444", padding: "2px 4px", fontSize: "11px" }}
+                    />
+                  </div>
+                  <div style={{ display: "flex", flex: 1, alignItems: "center", gap: "2px" }}>
+                    <span style={{ color: "#ccc", fontSize: "10px" }}>X</span>
+                    <input
+                      type="number"
+                      step="any"
+                      value={pt.y !== undefined ? Number(-pt.y * 2).toString() : ""}
+                      onFocus={saveState}
+                      onChange={(e) => handlePointChange(activePath.id, idx, 'X', e.target.value)}
+                      style={{ width: "100%", background: "#222", color: "#fff", border: "1px solid #444", padding: "2px 4px", fontSize: "11px" }}
+                    />
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
 
         <button
           onClick={solidifyFeatures}

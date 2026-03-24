@@ -12,8 +12,10 @@ const checkIntersect = (p1, p2, p3, p4, isTrimMode = false) => {
 };
 
 const CncWorkspace = () => {
-  // 🔥 新增：偵測是否為行動裝置
   const [isMobile, setIsMobile] = useState(window.innerWidth < 768);
+  
+  // 🔥 新增：控制是否開啟滿屏繪圖模式
+  const [isFullscreen, setIsFullscreen] = useState(false);
 
   useEffect(() => {
     const handleResize = () => setIsMobile(window.innerWidth < 768);
@@ -60,7 +62,7 @@ const CncWorkspace = () => {
   const canvasRef = useRef(null);
   const cameraRef = useRef({
     x: window.innerWidth / 2 - (isMobile ? 0 : 150),
-    y: window.innerHeight / (isMobile ? 4 : 2), // 手機版初始位置微調
+    y: window.innerHeight / (isMobile ? 4 : 2),
     zoom: 1.5,
   });
 
@@ -77,6 +79,8 @@ const CncWorkspace = () => {
     hoveredPathId: null,
     hoveredPtIdx: null,
     sim: { active: false, progress: 0, pts: [] },
+    initialPinchDist: null, // 🔥 記錄雙指初始距離
+    initialZoom: null,      // 🔥 記錄雙指捏合前的初始縮放比例
   });
 
   const saveState = () => {
@@ -532,8 +536,7 @@ const CncWorkspace = () => {
     g += `N20 G01 X${isInner ? stock.id - 2 : stock.od + 2}\nM30`;
     setGcode(g);
     
-    // 如果在手機版，產生 G-Code 後自動捲動到最下面
-    if (isMobile) {
+    if (isMobile && !isFullscreen) {
       setTimeout(() => {
         window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
       }, 100);
@@ -649,8 +652,7 @@ const CncWorkspace = () => {
 
     interactionRef.current.sim = { active: true, progress: 0, pts: sPts };
     
-    // 如果在手機版，啟動模擬時捲動回畫布區
-    if (isMobile) {
+    if (isMobile && !isFullscreen) {
       window.scrollTo({ top: 0, behavior: 'smooth' });
     }
   };
@@ -1032,10 +1034,10 @@ const CncWorkspace = () => {
     arcSubMode,
     toolConfig,
     isInner,
-    isMobile // 🔥 加入 isMobile 依賴
+    isMobile,
+    isFullscreen // 🔥 加入全螢幕狀態作為重新渲染條件
   ]);
 
-  // --- 滑鼠與觸控事件處理 (整合版) ---
   const handlePointerDown = (clientX, clientY, button = 0) => {
     if (button === 2) {
       interactionRef.current.continuous = false;
@@ -1052,7 +1054,7 @@ const CncWorkspace = () => {
 
     let snapPt = rawPt;
     let isSnapped = false;
-    if (Math.hypot(rawPt.x, rawPt.y) < (isMobile ? 20 : 12) / cameraRef.current.zoom) { // 手機版吸附範圍加大
+    if (Math.hypot(rawPt.x, rawPt.y) < (isMobile ? 20 : 12) / cameraRef.current.zoom) {
       snapPt = { x: 0, y: 0 };
       isSnapped = true;
     }
@@ -1436,7 +1438,7 @@ const CncWorkspace = () => {
     <div
       style={{
         display: "flex",
-        flexDirection: isMobile ? "column" : "row", // 🔥 手機版改為上下排列
+        flexDirection: isMobile && !isFullscreen ? "column" : "row",
         width: "100vw",
         height: "100vh",
         backgroundColor: "#1e1e1e",
@@ -1447,8 +1449,10 @@ const CncWorkspace = () => {
       <div style={{ 
         flexGrow: 1, 
         position: "relative",
-        height: isMobile ? "55vh" : "100vh", // 🔥 手機版畫布佔 55% 高度
-        minHeight: isMobile ? "350px" : "auto" 
+        // 🔥 全螢幕繪圖時畫布高度佔滿 100vh
+        height: isFullscreen ? "100vh" : (isMobile ? "55vh" : "100vh"),
+        width: isFullscreen ? "100vw" : "auto",
+        minHeight: isMobile && !isFullscreen ? "350px" : "auto" 
       }}>
         <canvas
           ref={canvasRef}
@@ -1457,7 +1461,7 @@ const CncWorkspace = () => {
             width: "100%",
             height: "100%",
             cursor: "none",
-            touchAction: "none", // 🔥 防止手機滑動時畫面跟著捲動
+            touchAction: "none", 
           }}
           onMouseDown={(e) => handlePointerDown(e.clientX, e.clientY, e.button)}
           onMouseMove={(e) => handlePointerMove(e.clientX, e.clientY)}
@@ -1467,15 +1471,31 @@ const CncWorkspace = () => {
             if (e.touches.length === 1) {
               const touch = e.touches[0];
               handlePointerDown(touch.clientX, touch.clientY, 0);
+            } else if (e.touches.length === 2) {
+              // 🔥 雙指縮放：記錄起始距離與縮放值
+              const t1 = e.touches[0];
+              const t2 = e.touches[1];
+              interactionRef.current.initialPinchDist = Math.hypot(t1.clientX - t2.clientX, t1.clientY - t2.clientY);
+              interactionRef.current.initialZoom = cameraRef.current.zoom;
             }
           }}
           onTouchMove={(e) => {
             if (e.touches.length === 1) {
               const touch = e.touches[0];
               handlePointerMove(touch.clientX, touch.clientY);
+            } else if (e.touches.length === 2 && interactionRef.current.initialPinchDist) {
+              // 🔥 雙指縮放：計算縮放比例
+              const t1 = e.touches[0];
+              const t2 = e.touches[1];
+              const dist = Math.hypot(t1.clientX - t2.clientX, t1.clientY - t2.clientY);
+              const scale = dist / interactionRef.current.initialPinchDist;
+              cameraRef.current.zoom = Math.max(0.01, Math.min(interactionRef.current.initialZoom * scale, 150));
             }
           }}
-          onTouchEnd={handlePointerUp}
+          onTouchEnd={(e) => {
+            interactionRef.current.initialPinchDist = null;
+            handlePointerUp();
+          }}
           onWheel={(e) => {
             const z = e.deltaY > 0 ? 0.85 : 1.15;
             cameraRef.current.zoom = Math.max(0.01, Math.min(cameraRef.current.zoom * z, 150));
@@ -1483,7 +1503,6 @@ const CncWorkspace = () => {
           onContextMenu={(e) => e.preventDefault()}
         />
 
-        {/* 🔥 行動裝置友善的工具列 */}
         <div
           style={{
             position: "absolute",
@@ -1500,6 +1519,11 @@ const CncWorkspace = () => {
             overflowY: "auto",
           }}
         >
+          {/* 🔥 新增：滿屏切換按鈕 */}
+          <button onClick={() => { setIsFullscreen(!isFullscreen); setTimeout(handleZoomToFit, 50); }} style={{ background: isFullscreen ? "#e83e8c" : "#17a2b8", color: "#fff", border: "none", padding: "6px 10px", borderRadius: "4px", cursor: "pointer", fontWeight: "bold", fontSize: isMobile ? "11px" : "13px" }}>
+            {isFullscreen ? "🔲 縮回" : "🔲 滿屏"}
+          </button>
+          
           <button onClick={handleUndo} style={{ background: "#ff9800", border: "none", padding: "6px 10px", borderRadius: "4px", fontWeight: "bold", cursor: "pointer", fontSize: isMobile ? "11px" : "13px" }}>
             ↩ 復原
           </button>
@@ -1546,9 +1570,6 @@ const CncWorkspace = () => {
           
           <div style={{ display: "flex", gap: "2px" }}>
              <button onClick={handleZoomToFit} style={{ background: "#17a2b8", color: "#fff", border: "none", padding: "6px 10px", borderRadius: "4px", cursor: "pointer", fontWeight: "bold", fontSize: isMobile ? "11px" : "13px" }}>🔍 全圖</button>
-             {/* 🔥 手機專用縮放按鈕 */}
-             <button onClick={() => cameraRef.current.zoom = Math.min(150, cameraRef.current.zoom * 1.3)} style={{ background: "#6c757d", color: "#fff", border: "none", padding: "6px 10px", borderRadius: "4px", cursor: "pointer", fontWeight: "bold", fontSize: isMobile ? "11px" : "13px" }}>➕</button>
-             <button onClick={() => cameraRef.current.zoom = Math.max(0.01, cameraRef.current.zoom * 0.7)} style={{ background: "#6c757d", color: "#fff", border: "none", padding: "6px 10px", borderRadius: "4px", cursor: "pointer", fontWeight: "bold", fontSize: isMobile ? "11px" : "13px" }}>➖</button>
           </div>
 
           <button onClick={() => { saveState(); setPaths([]); setSelectedPathId(null); setSelRange({ pathId: null, p1: null, p2: null }); }} style={{ background: "#dc3545", color: "#fff", border: "none", padding: "6px 10px", borderRadius: "4px", cursor: "pointer", fontSize: isMobile ? "11px" : "13px" }}>✖ 清除</button>
@@ -1569,21 +1590,23 @@ const CncWorkspace = () => {
             color: "#00ff00",
             fontFamily: "monospace",
             fontSize: "13px",
-            pointerEvents: "none" // 避免擋住觸控
+            pointerEvents: "none" 
           }}
         >
           Z: <span id="coordZ">0.000</span> / X: <span id="coordX">0.000</span>
         </div>
       </div>
 
+      {/* 🔥 滿屏模式下隱藏右側/下方參數面板 */}
       <div
         style={{
-          width: isMobile ? "100%" : "400px", // 🔥 手機版寬度 100%
-          minHeight: isMobile ? "45vh" : "100vh", // 🔥 手機版給予基本高度
+          display: isFullscreen ? "none" : "block",
+          width: isMobile ? "100%" : "400px", 
+          minHeight: isMobile ? "45vh" : "100vh", 
           background: "#252526",
           padding: isMobile ? "15px" : "20px",
           borderLeft: isMobile ? "none" : "1px solid #444",
-          borderTop: isMobile ? "1px solid #444" : "none", // 手機版加上分隔線
+          borderTop: isMobile ? "1px solid #444" : "none", 
           overflowY: "auto",
         }}
       >
@@ -1591,7 +1614,7 @@ const CncWorkspace = () => {
         <div
           style={{
             display: "grid",
-            gridTemplateColumns: isMobile ? "1fr 1fr" : "1fr 1fr 1fr", // 🔥 手機版變 2 欄避免太擠
+            gridTemplateColumns: isMobile ? "1fr 1fr" : "1fr 1fr 1fr", 
             gap: "8px",
             marginBottom: "15px",
           }}

@@ -1,6 +1,5 @@
 import React, { useEffect, useRef, useState, useMemo } from "react";
 
-// ✅ 搬移到這裡：檔案最頂端，全域可用
 const checkIntersect = (p1, p2, p3, p4, isTrimMode = false) => {
   const den = (p4.y - p3.y) * (p2.x - p1.x) - (p4.x - p3.x) * (p2.y - p1.y);
   if (Math.abs(den) < 1e-10) return null;
@@ -153,13 +152,12 @@ const CncWorkspace = () => {
           const pB_x = pt.x + v2.x * d,
             pB_y = pt.y + v2.y * d;
             
-          // 🔥 修正：計算出角度差，強制讓 Canvas 走小於 180 度的「最短路徑」
           const startAngle = Math.atan2(pA.y - cy, pA.x - cx);
           const endAngle = Math.atan2(pB_y - cy, pB_x - cx);
           let diff = endAngle - startAngle;
           while (diff > Math.PI) diff -= 2 * Math.PI;
           while (diff < -Math.PI) diff += 2 * Math.PI;
-          const drawCCW = diff < 0; // true 代表畫布需逆時針繪圖
+          const drawCCW = diff < 0; 
 
           res.push(pA, {
             x: pB_x,
@@ -167,7 +165,7 @@ const CncWorkspace = () => {
             type: "arc",
             radius: r,
             ccw,
-            drawCCW, // 🔥 將這個繪圖專用參數傳遞下去
+            drawCCW,
             cx,
             cy,
             startAngle,
@@ -341,6 +339,51 @@ const CncWorkspace = () => {
     );
   };
 
+  // 🔥 新增：一鍵置中 (Zoom to fit)
+  const handleZoomToFit = () => {
+    const canvas = canvasRef.current;
+    if (!canvas || !canvas.parentElement) return;
+
+    const pWidth = canvas.parentElement.clientWidth;
+    const pHeight = canvas.parentElement.clientHeight;
+
+    // 先用素材大小當作基本邊界
+    let minX = -stock.length;
+    let maxX = Number(stock.face) || 0;
+    let minY = -stock.od / 2;
+    let maxY = stock.od / 2;
+
+    // 將所有繪製的路徑點也考慮進邊界中
+    paths.forEach((p) => {
+      if (!p.points) return;
+      p.points.forEach((pt) => {
+        if (pt.x < minX) minX = pt.x;
+        if (pt.x > maxX) maxX = pt.x;
+        if (pt.y < minY) minY = pt.y;
+        if (pt.y > maxY) maxY = pt.y;
+      });
+    });
+
+    // 加上一些四周的 Padding
+    const padding = 60;
+    const boxWidth = maxX - minX || 1;
+    const boxHeight = maxY - minY || 1;
+
+    // 計算符合長寬的最佳縮放比例
+    const zoomX = (pWidth - padding * 2) / boxWidth;
+    const zoomY = (pHeight - padding * 2) / boxHeight;
+    const newZoom = Math.max(0.01, Math.min(zoomX, zoomY, 150));
+
+    // 計算邊界中心點
+    const cx = (minX + maxX) / 2;
+    const cy = (minY + maxY) / 2;
+
+    // 調整攝影機
+    cameraRef.current.zoom = newZoom;
+    cameraRef.current.x = pWidth / 2 - cx * newZoom;
+    cameraRef.current.y = pHeight / 2 - cy * newZoom;
+  };
+
   const genGCode = () => {
     if (!activePath || !activePath.points || activePath.points.length < 2) {
       alert("請畫出或選定一條包含2點以上的加工路徑！");
@@ -371,10 +414,17 @@ const CncWorkspace = () => {
   };
 
   const startSimulation = () => {
-    if (!activeCompPts || activeCompPts.length < 2) {
-      alert("請選擇加工路徑！");
+    // 再次點擊模擬可以取消
+    if (interactionRef.current.sim.active) {
+      interactionRef.current.sim.active = false;
       return;
     }
+
+    if (!activeCompPts || activeCompPts.length < 2) {
+      alert("請選擇一條欲模擬的加工路徑（可使用選取工具點擊綠色線條）！");
+      return;
+    }
+    
     let sPts = [];
     const safeZ = Math.max(activeCompPts[0].x, stock.face) + cam.safeDist;
     const startDia = isInner ? stock.id : stock.od;
@@ -426,6 +476,8 @@ const CncWorkspace = () => {
     sPts.push({ x: safeZ, y: activeCompPts[0].y, type: "G00" });
     activeCompPts.forEach((pt) => sPts.push({ ...pt, type: pt.type || "G01" }));
     sPts.push({ x: safeZ, y: safeY, type: "G00" });
+    
+    // 將計算好的路徑點放進去，並啟動模擬
     interactionRef.current.sim = { active: true, progress: 0, pts: sPts };
   };
 
@@ -435,6 +487,12 @@ const CncWorkspace = () => {
     if (!canvas) return;
     const ctx = canvas.getContext("2d");
     let animationFrameId;
+
+    // 初始渲染時執行一次置中
+    if (paths.length === 0 && stock.od > 0 && stock.length > 0 && !interactionRef.current.initialZoomed) {
+      handleZoomToFit();
+      interactionRef.current.initialZoomed = true;
+    }
 
     const render = () => {
       canvas.width = canvas.parentElement.clientWidth;
@@ -498,7 +556,6 @@ const CncWorkspace = () => {
           if (!pt || typeof pt.x === "undefined" || typeof pt.y === "undefined")
             return;
           
-          // 🔥 修正：繪圖路線優先使用最短路徑方向
           if (i === 0) ctx.moveTo(pt.x, pt.y);
           else if (pt.type === "arc")
             ctx.arc(
@@ -533,7 +590,6 @@ const CncWorkspace = () => {
             )
               return;
             
-            // 🔥 修正：刀補的繪圖路線也優先使用最短路徑方向
             if (i === 0) ctx.moveTo(pt.x, pt.y);
             else if (pt.type === "arc" && pt.radius)
               ctx.arc(
@@ -1508,6 +1564,22 @@ const CncWorkspace = () => {
               </div>
             )}
           </div>
+          
+          {/* 🔥 新增：一鍵置中按鈕 */}
+          <button
+            onClick={handleZoomToFit}
+            style={{
+              background: "#17a2b8",
+              color: "#fff",
+              border: "none",
+              padding: "6px 12px",
+              borderRadius: "4px",
+              cursor: "pointer",
+              fontWeight: "bold",
+            }}
+          >
+            🔍 置中
+          </button>
 
           <button
             onClick={() => {
@@ -1850,10 +1922,31 @@ const CncWorkspace = () => {
             borderRadius: "4px",
             marginBottom: "10px",
             fontWeight: "bold",
+            cursor: "pointer",
           }}
         >
           🔨 實體化所有倒角
         </button>
+
+        {/* 🔥 新增：呼叫刀具路徑模擬的按鈕 */}
+        <button
+          onClick={startSimulation}
+          style={{
+            width: "100%",
+            padding: "15px",
+            background: "#fd7e14",
+            color: "white",
+            border: "none",
+            borderRadius: "4px",
+            marginBottom: "10px",
+            fontWeight: "bold",
+            fontSize: "16px",
+            cursor: "pointer",
+          }}
+        >
+          ▶️ 刀具路徑模擬
+        </button>
+
         <button
           onClick={genGCode}
           style={{
@@ -1865,6 +1958,7 @@ const CncWorkspace = () => {
             borderRadius: "4px",
             fontWeight: "bold",
             fontSize: "16px",
+            cursor: "pointer",
           }}
         >
           🚀 產生 G-Code

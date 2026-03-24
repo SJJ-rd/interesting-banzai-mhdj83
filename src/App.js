@@ -13,8 +13,6 @@ const checkIntersect = (p1, p2, p3, p4, isTrimMode = false) => {
 
 const CncWorkspace = () => {
   const [isMobile, setIsMobile] = useState(window.innerWidth < 768);
-  
-  // 🔥 新增：控制是否開啟滿屏繪圖模式
   const [isFullscreen, setIsFullscreen] = useState(false);
 
   useEffect(() => {
@@ -78,9 +76,10 @@ const CncWorkspace = () => {
     arcPts: [],
     hoveredPathId: null,
     hoveredPtIdx: null,
+    hoveredSegment: null, // 🔥 新增：用於記錄目前被選中的「單一線段」
     sim: { active: false, progress: 0, pts: [] },
-    initialPinchDist: null, // 🔥 記錄雙指初始距離
-    initialZoom: null,      // 🔥 記錄雙指捏合前的初始縮放比例
+    initialPinchDist: null,
+    initialZoom: null,
   });
 
   const saveState = () => {
@@ -747,6 +746,25 @@ const CncWorkspace = () => {
         }
       });
 
+      // 🔥 渲染橡皮擦選取的欲刪除線段
+      if (mode === "ERASE" && interactionRef.current.hoveredSegment) {
+        const hs = interactionRef.current.hoveredSegment;
+        const p = paths[hs.pathIdx];
+        if (p && p.points && p.points[hs.segIdx] && p.points[hs.segIdx + 1]) {
+          const pt1 = p.points[hs.segIdx];
+          const pt2 = p.points[hs.segIdx + 1];
+          ctx.save();
+          ctx.lineWidth = 5 / cameraRef.current.zoom;
+          ctx.strokeStyle = "#ff4444"; // 刪除提示色(紅)
+          ctx.beginPath();
+          ctx.moveTo(pt1.x, pt1.y);
+          // 為了準確反白，這裡直接用線段相連表示
+          ctx.lineTo(pt2.x, pt2.y);
+          ctx.stroke();
+          ctx.restore();
+        }
+      }
+
       if (activePath && camPathPts.length > 0) {
         const hasSubSelection = selRange.pathId === activePath.id && selRange.p1 !== null && selRange.p2 !== null;
         if (hasSubSelection) {
@@ -1035,7 +1053,7 @@ const CncWorkspace = () => {
     toolConfig,
     isInner,
     isMobile,
-    isFullscreen // 🔥 加入全螢幕狀態作為重新渲染條件
+    isFullscreen 
   ]);
 
   const handlePointerDown = (clientX, clientY, button = 0) => {
@@ -1143,6 +1161,28 @@ const CncWorkspace = () => {
     } else if (mode === "TRIM") {
       interactionRef.current.isDragging = true;
       interactionRef.current.trimPath = [rawPt];
+    } else if (mode === "ERASE") {
+      // 🔥 橡皮擦：刪除選中線段
+      const hs = interactionRef.current.hoveredSegment;
+      if (hs) {
+        saveState();
+        setPaths((prev) => {
+          const n = JSON.parse(JSON.stringify(prev));
+          const targetPath = n[hs.pathIdx];
+          const pts = targetPath.points;
+
+          const p1 = pts.slice(0, hs.segIdx + 1);
+          const p2 = pts.slice(hs.segIdx + 1);
+
+          n.splice(hs.pathIdx, 1);
+          // 若拆分後的線段還有兩點以上，就保留下來
+          if (p1.length > 1) n.push({ id: Date.now() + 1, points: p1 });
+          if (p2.length > 1) n.push({ id: Date.now() + 2, points: p2 });
+
+          return n;
+        });
+        interactionRef.current.hoveredSegment = null;
+      }
     } else if (mode === "CHAMFER") {
       const hc = interactionRef.current.hoveredCorner;
       if (hc) {
@@ -1303,9 +1343,37 @@ const CncWorkspace = () => {
       });
       interactionRef.current.hoveredPathId = foundId;
       interactionRef.current.hoveredPtIdx = foundPtIdx;
+    } else if (mode === "ERASE") {
+      // 🔥 橡皮擦：判斷游標最靠近哪一條線段
+      let minD = (isMobile ? 30 : 20) / cameraRef.current.zoom;
+      let found = null;
+
+      const getDistToSegment = (p, v, w) => {
+        const l2 = (v.x - w.x)**2 + (v.y - w.y)**2;
+        if (l2 === 0) return Math.hypot(p.x - v.x, p.y - v.y);
+        let t = ((p.x - v.x) * (w.x - v.x) + (p.y - v.y) * (w.y - v.y)) / l2;
+        t = Math.max(0, Math.min(1, t));
+        return Math.hypot(p.x - (v.x + t * (w.x - v.x)), p.y - (v.y + t * (w.y - v.y)));
+      };
+
+      paths.forEach((p, pIdx) => {
+        if (!p.points) return;
+        const pts = p.points;
+        for (let i = 0; i < pts.length - 1; i++) {
+          if (!pts[i] || !pts[i+1]) continue;
+          // 將圓弧視為一直線來做點選判定（足以應付大多數點選需求）
+          const d = getDistToSegment(rawPt, pts[i], pts[i+1]);
+          if (d < minD) {
+            minD = d;
+            found = { pathIdx: pIdx, segIdx: i };
+          }
+        }
+      });
+      interactionRef.current.hoveredSegment = found;
     } else {
       interactionRef.current.hoveredPathId = null;
       interactionRef.current.hoveredPtIdx = null;
+      interactionRef.current.hoveredSegment = null;
     }
 
     if (mode === "CHAMFER") {
@@ -1449,7 +1517,6 @@ const CncWorkspace = () => {
       <div style={{ 
         flexGrow: 1, 
         position: "relative",
-        // 🔥 全螢幕繪圖時畫布高度佔滿 100vh
         height: isFullscreen ? "100vh" : (isMobile ? "55vh" : "100vh"),
         width: isFullscreen ? "100vw" : "auto",
         minHeight: isMobile && !isFullscreen ? "350px" : "auto" 
@@ -1472,7 +1539,6 @@ const CncWorkspace = () => {
               const touch = e.touches[0];
               handlePointerDown(touch.clientX, touch.clientY, 0);
             } else if (e.touches.length === 2) {
-              // 🔥 雙指縮放：記錄起始距離與縮放值
               const t1 = e.touches[0];
               const t2 = e.touches[1];
               interactionRef.current.initialPinchDist = Math.hypot(t1.clientX - t2.clientX, t1.clientY - t2.clientY);
@@ -1484,7 +1550,6 @@ const CncWorkspace = () => {
               const touch = e.touches[0];
               handlePointerMove(touch.clientX, touch.clientY);
             } else if (e.touches.length === 2 && interactionRef.current.initialPinchDist) {
-              // 🔥 雙指縮放：計算縮放比例
               const t1 = e.touches[0];
               const t2 = e.touches[1];
               const dist = Math.hypot(t1.clientX - t2.clientX, t1.clientY - t2.clientY);
@@ -1519,7 +1584,6 @@ const CncWorkspace = () => {
             overflowY: "auto",
           }}
         >
-          {/* 🔥 新增：滿屏切換按鈕 */}
           <button onClick={() => { setIsFullscreen(!isFullscreen); setTimeout(handleZoomToFit, 50); }} style={{ background: isFullscreen ? "#e83e8c" : "#17a2b8", color: "#fff", border: "none", padding: "6px 10px", borderRadius: "4px", cursor: "pointer", fontWeight: "bold", fontSize: isMobile ? "11px" : "13px" }}>
             {isFullscreen ? "🔲 縮回" : "🔲 滿屏"}
           </button>
@@ -1551,9 +1615,11 @@ const CncWorkspace = () => {
             <button onClick={() => { setMode("DRAW_CIRCLE"); setCircleSubMode("CEN"); interactionRef.current.circleStart = null; }} style={{ background: mode === "DRAW_CIRCLE" && circleSubMode === "CEN" ? "#e83e8c" : "#444", color: "#fff", border: "none", padding: "6px", fontSize: "11px", cursor: "pointer" }}>🔴圓</button>
           </div>
 
-          <button onClick={() => setMode("TRIM")} style={{ background: mode === "TRIM" ? "#ff4444" : "#444", color: "#fff", border: "none", padding: "6px 10px", borderRadius: "4px", cursor: "pointer", fontSize: isMobile ? "11px" : "13px" }}>
-            ✂️
-          </button>
+          {/* 🔥 組合修剪與橡皮擦 */}
+          <div style={{ display: "flex", gap: "2px", background: "#333", padding: "2px", borderRadius: "4px" }}>
+            <button onClick={() => setMode("TRIM")} style={{ background: mode === "TRIM" ? "#ff4444" : "#444", color: "#fff", border: "none", padding: "6px 10px", borderRadius: "4px", cursor: "pointer", fontSize: isMobile ? "11px" : "13px" }}>✂️ 修剪</button>
+            <button onClick={() => setMode("ERASE")} style={{ background: mode === "ERASE" ? "#ff4444" : "#444", color: "#fff", border: "none", padding: "6px 10px", borderRadius: "4px", cursor: "pointer", fontSize: isMobile ? "11px" : "13px", fontWeight: "bold" }}>🧽 橡皮擦</button>
+          </div>
 
           <div style={{ display: "flex", gap: "2px", background: "#333", padding: "2px", borderRadius: "4px" }}>
             <button onClick={() => setMode("CHAMFER")} style={{ background: mode === "CHAMFER" ? "#ffeb3b" : "#444", color: mode === "CHAMFER" ? "#000" : "#fff", border: "none", padding: "6px 10px", borderRadius: "4px", cursor: "pointer", fontWeight: "bold", fontSize: isMobile ? "11px" : "13px" }}>🔨 倒角</button>
@@ -1597,7 +1663,6 @@ const CncWorkspace = () => {
         </div>
       </div>
 
-      {/* 🔥 滿屏模式下隱藏右側/下方參數面板 */}
       <div
         style={{
           display: isFullscreen ? "none" : "block",
@@ -1646,6 +1711,20 @@ const CncWorkspace = () => {
         {activePath && (
           <div style={{ marginBottom: "15px", background: "#111", padding: "10px", borderRadius: "4px", border: "1px solid #333" }}>
             <h4 style={{ color: "#0dcaf0", fontSize: "13px", margin: "0 0 10px 0" }}>📏 尺寸與座標編輯</h4>
+            
+            {/* 🔥 新增：刪除整條選取路徑的按鈕 */}
+            <button 
+              onClick={() => {
+                saveState();
+                setPaths(prev => prev.filter(p => p.id !== activePath.id));
+                setSelectedPathId(null);
+                setSelRange({ pathId: null, p1: null, p2: null });
+              }} 
+              style={{ width: "100%", background: "#dc3545", color: "#fff", border: "none", padding: "6px", borderRadius: "4px", marginBottom: "10px", fontWeight: "bold", cursor: "pointer", fontSize: "12px" }}
+            >
+              🗑️ 刪除整條路徑
+            </button>
+
             <div style={{ display: "flex", gap: "5px", marginBottom: "10px" }}>
               <input type="number" placeholder="Z偏移" value={transform.dz} onChange={e => setTransform({...transform, dz: e.target.value})} style={{ width: "33%", background: "#222", color: "#fff", border: "none", padding: "5px", fontSize: "11px" }} />
               <input type="number" placeholder="X偏移" value={transform.dx} onChange={e => setTransform({...transform, dx: e.target.value})} style={{ width: "33%", background: "#222", color: "#fff", border: "none", padding: "5px", fontSize: "11px" }} />

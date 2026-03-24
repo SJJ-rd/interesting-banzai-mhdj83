@@ -148,22 +148,30 @@ const CncWorkspace = () => {
             ny *= -1;
           }
           
-          // 🔥 修正：已移除內部重複宣告的 checkIntersect
-          
           const cx = pA.x + nx * r,
             cy = pA.y + ny * r;
           const pB_x = pt.x + v2.x * d,
             pB_y = pt.y + v2.y * d;
+            
+          // 🔥 修正：計算出角度差，強制讓 Canvas 走小於 180 度的「最短路徑」
+          const startAngle = Math.atan2(pA.y - cy, pA.x - cx);
+          const endAngle = Math.atan2(pB_y - cy, pB_x - cx);
+          let diff = endAngle - startAngle;
+          while (diff > Math.PI) diff -= 2 * Math.PI;
+          while (diff < -Math.PI) diff += 2 * Math.PI;
+          const drawCCW = diff < 0; // true 代表畫布需逆時針繪圖
+
           res.push(pA, {
             x: pB_x,
             y: pB_y,
             type: "arc",
             radius: r,
             ccw,
+            drawCCW, // 🔥 將這個繪圖專用參數傳遞下去
             cx,
             cy,
-            startAngle: Math.atan2(pA.y - cy, pA.x - cx),
-            endAngle: Math.atan2(pB_y - cy, pB_x - cx),
+            startAngle,
+            endAngle,
           });
         }
       } else res.push({ ...pt });
@@ -229,17 +237,6 @@ const CncWorkspace = () => {
         ?.points || [],
     [activePath, visualCompPaths, paths]
   );
-
-  const lineIntersect = (A, B, C, D) => {
-    if (!A || !B || !C || !D) return null;
-    const den = (D.y - C.y) * (B.x - A.x) - (D.x - C.x) * (B.y - A.y);
-    if (Math.abs(den) < 1e-8) return null;
-    const t = ((D.x - C.x) * (A.y - C.y) - (D.y - C.y) * (A.x - C.x)) / den;
-    const u = ((B.x - A.x) * (A.y - C.y) - (B.y - A.y) * (A.x - C.x)) / den;
-    return t >= 0 && t <= 1 && u >= 0 && u <= 1
-      ? { x: A.x + t * (B.x - A.x), y: A.y + t * (B.y - A.y) }
-      : null;
-  };
 
   const getTangentCircle = (mousePt) => {
     let best = null;
@@ -344,23 +341,6 @@ const CncWorkspace = () => {
     );
   };
 
-  const applyOffset = () => {
-    if (!activePath || !activePath.points) return;
-    saveState();
-    const newPts = activePath.points.map((p) => ({
-      ...p,
-      y: p.y - (offsetDist / 2) * (isInner ? -1 : 1),
-      c: 0,
-      r: 0,
-    }));
-    const newId = Date.now();
-    setPaths((prev) => [
-      ...prev,
-      { id: newId, points: newPts, isOffset: true },
-    ]);
-    setSelectedPathId(newId);
-  };
-
   const genGCode = () => {
     if (!activePath || !activePath.points || activePath.points.length < 2) {
       alert("請畫出或選定一條包含2點以上的加工路徑！");
@@ -454,7 +434,7 @@ const CncWorkspace = () => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext("2d");
-    let animationFrameId; // 🔥 修正：建立變數來追蹤 requestAnimationFrame
+    let animationFrameId;
 
     const render = () => {
       canvas.width = canvas.parentElement.clientWidth;
@@ -517,6 +497,8 @@ const CncWorkspace = () => {
         p.points.forEach((pt, i) => {
           if (!pt || typeof pt.x === "undefined" || typeof pt.y === "undefined")
             return;
+          
+          // 🔥 修正：繪圖路線優先使用最短路徑方向
           if (i === 0) ctx.moveTo(pt.x, pt.y);
           else if (pt.type === "arc")
             ctx.arc(
@@ -525,7 +507,7 @@ const CncWorkspace = () => {
               pt.radius,
               pt.startAngle,
               pt.endAngle,
-              !pt.ccw
+              pt.drawCCW !== undefined ? pt.drawCCW : !pt.ccw
             );
           else ctx.lineTo(pt.x, pt.y);
         });
@@ -550,6 +532,8 @@ const CncWorkspace = () => {
               typeof pt.y === "undefined"
             )
               return;
+            
+            // 🔥 修正：刀補的繪圖路線也優先使用最短路徑方向
             if (i === 0) ctx.moveTo(pt.x, pt.y);
             else if (pt.type === "arc" && pt.radius)
               ctx.arc(
@@ -558,7 +542,7 @@ const CncWorkspace = () => {
                 pt.radius,
                 pt.startAngle,
                 pt.endAngle,
-                !pt.ccw
+                pt.drawCCW !== undefined ? pt.drawCCW : !pt.ccw
               );
             else ctx.lineTo(pt.x, pt.y);
           });
@@ -797,12 +781,10 @@ const CncWorkspace = () => {
       }
       ctx.restore();
       
-      // 🔥 修正：把回傳的 ID 存起來
       animationFrameId = requestAnimationFrame(render);
     };
     render();
     
-    // 🔥 修正：加上 cleanup function 確保不會產生無限疊加的無窮迴圈
     return () => {
       cancelAnimationFrame(animationFrameId);
     };
@@ -1598,7 +1580,6 @@ const CncWorkspace = () => {
             marginBottom: "15px",
           }}
         >
-          {/* 🔥 修正：所有綁定到數值的 Input 加上 Number() 強制轉型 */}
           <div>
             <label style={{ fontSize: "11px", color: "#ccc" }}>外徑 OD</label>
             <input

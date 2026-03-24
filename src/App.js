@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState, useMemo } from "react";
 
-// ✅ 1. 核心幾何算法：移至最外層，確保 handleMouseUp 能正確呼叫，避免 ReferenceError
+// ✅ 修正 1：核心幾何算法移至最外層，確保 handleMouseUp 能正確呼叫
 const checkIntersect = (p1, p2, p3, p4, isTrimMode = false) => {
   if (!p1 || !p2 || !p3 || !p4 || typeof p1.x === "undefined" || typeof p3.x === "undefined") return null;
   const den = (p4.y - p3.y) * (p2.x - p1.x) - (p4.x - p3.x) * (p2.y - p1.y);
@@ -53,7 +53,7 @@ const CncWorkspace = () => {
 
   const canvasRef = useRef(null);
   
-  // ✅ 2. 攝影機初始設為 0，由渲染邏輯自動計算置中
+  // ✅ 修正 2：攝影機初始設為 0，由渲染邏輯自動校正
   const cameraRef = useRef({
     x: 0,
     y: 0,
@@ -78,7 +78,6 @@ const CncWorkspace = () => {
       ...prev.slice(-29),
       JSON.parse(JSON.stringify(paths)),
     ]);
-    
   const handleUndo = () => {
     setHistory((prev) => {
       if (prev.length === 0) return prev;
@@ -108,7 +107,6 @@ const CncWorkspace = () => {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [paths]);
 
-  // --- 幾何計算引擎 ---
   const getVisualPoints = (pts) => {
     if (!pts || !Array.isArray(pts)) return [];
     let res = [];
@@ -120,7 +118,6 @@ const CncWorkspace = () => {
       if ((pt.c > 0 || pt.r > 0) && i > 0 && i < pts.length - 1) {
         const p = pts[i - 1], n = pts[i + 1];
         if (!p || !n) { res.push(pt); continue; }
-
         const v1 = { x: p.x - pt.x, y: p.y - pt.y }, v2 = { x: n.x - pt.x, y: n.y - pt.y };
         const l1 = Math.hypot(v1.x, v1.y), l2 = Math.hypot(v2.x, v2.y);
         if (l1 < 0.001 || l2 < 0.001) { res.push(pt); continue; }
@@ -152,62 +149,38 @@ const CncWorkspace = () => {
     return res;
   };
 
-  const visualPaths = useMemo(
-    () => paths.map((p) => ({ ...p, points: getVisualPoints(p.points) })),
-    [paths]
-  );
-  const activePath = useMemo(
-    () => paths.find((p) => p.id === selectedPathId) || paths[paths.length - 1],
-    [paths, selectedPathId]
-  );
+  const visualPaths = useMemo(() => paths.map((p) => ({ ...p, points: getVisualPoints(p.points) })), [paths]);
+  const activePath = useMemo(() => paths.find((p) => p.id === selectedPathId) || paths[paths.length - 1], [paths, selectedPathId]);
 
   const getOffsetPoints = (pts, toolR, isInner) => {
     if (!pts || !Array.isArray(pts) || pts.length < 2) return [];
     const dir = isInner ? -1 : 1;
-    return pts
-      .map((pt, i) => {
-        if (!pt) return null;
-        if (pt.type === "arc" && pt.radius) {
-          const mag = pt.ccw ? (dir === 1 ? -toolR : toolR) : (dir === 1 ? toolR : -toolR);
-          const newR = Math.max(0.001, pt.radius + mag);
-          const newX = pt.cx + Math.cos(pt.endAngle) * newR;
-          const newY = pt.cy + Math.sin(pt.endAngle) * newR;
-          return { ...pt, radius: newR, x: newX, y: newY };
-        }
-        const p1 = i === 0 ? pt : pts[i - 1], p2 = i === 0 ? pts[1] : pt;
-        if (!p1 || !p2) return { ...pt };
-        const dx = p2.x - p1.x, dy = p2.y - p1.y, len = Math.hypot(dx, dy);
-        if (len < 1e-5) return { ...pt };
-        const newX = pt.x + (-dy / len) * toolR * dir;
-        const newY = pt.y + (dx / len) * toolR * dir;
-        return { ...pt, x: newX, y: newY };
-      })
-      .filter(Boolean);
+    return pts.map((pt, i) => {
+      if (!pt) return null;
+      if (pt.type === "arc" && pt.radius) {
+        const mag = pt.ccw ? (dir === 1 ? -toolR : toolR) : (dir === 1 ? toolR : -toolR);
+        const newR = Math.max(0.001, pt.radius + mag);
+        const newX = pt.cx + Math.cos(pt.endAngle) * newR;
+        const newY = pt.cy + Math.sin(pt.endAngle) * newR;
+        return { ...pt, radius: newR, x: newX, y: newY };
+      }
+      const p1 = i === 0 ? pt : pts[i - 1], p2 = i === 0 ? pts[1] : pt;
+      if (!p1 || !p2) return { ...pt };
+      const dx = p2.x - p1.x, dy = p2.y - p1.y, len = Math.hypot(dx, dy);
+      if (len < 1e-5) return { ...pt };
+      const newX = pt.x + (-dy / len) * toolR * dir;
+      const newY = pt.y + (dx / len) * toolR * dir;
+      return { ...pt, x: newX, y: newY };
+    }).filter(Boolean);
   };
 
-  const visualCompPaths = useMemo(
-    () => visualPaths.map((p) => ({ ...p, points: getOffsetPoints(p.points, toolConfig.r, isInner) })),
-    [visualPaths, toolConfig.r, isInner]
-  );
-  const activeCompPts = useMemo(
-    () => visualCompPaths[paths.findIndex((p) => p.id === activePath?.id)]?.points || [],
-    [activePath, visualCompPaths, paths]
-  );
-
-  const lineIntersect = (A, B, C, D) => {
-    if (!A || !B || !C || !D) return null;
-    const den = (D.y - C.y) * (B.x - A.x) - (D.x - C.x) * (B.y - A.y);
-    if (Math.abs(den) < 1e-8) return null;
-    const t = ((D.x - C.x) * (A.y - C.y) - (D.y - C.y) * (A.x - C.x)) / den;
-    const u = ((B.x - A.x) * (A.y - C.y) - (B.y - A.y) * (A.x - C.x)) / den;
-    return t >= 0 && t <= 1 && u >= 0 && u <= 1 ? { x: A.x + t * (B.x - A.x), y: A.y + t * (B.y - A.y) } : null;
-  };
+  const visualCompPaths = useMemo(() => visualPaths.map((p) => ({ ...p, points: getOffsetPoints(p.points, toolConfig.r, isInner) })), [visualPaths, toolConfig.r, isInner]);
+  const activeCompPts = useMemo(() => visualCompPaths[paths.findIndex((p) => p.id === activePath?.id)]?.points || [], [activePath, visualCompPaths, paths]);
 
   const getTangentCircle = (mousePt) => {
-    let best = null;
-    let minD = 40 / cameraRef.current.zoom;
+    let best = null; let minD = 40 / cameraRef.current.zoom;
     paths.forEach((path) => {
-      if (!path.points || !Array.isArray(path.points)) return;
+      if (!path.points) return;
       for (let i = 0; i < path.points.length - 1; i++) {
         const p1 = path.points[i], p2 = path.points[i + 1];
         if (!p1 || !p2) continue;
@@ -246,31 +219,13 @@ const CncWorkspace = () => {
     if (typeof x === "undefined" || typeof y === "undefined") return;
     ctx.save(); ctx.strokeStyle = color; ctx.lineWidth = lw / cameraRef.current.zoom;
     ctx.beginPath(); ctx.moveTo(x - size / cameraRef.current.zoom, y); ctx.lineTo(x + size / cameraRef.current.zoom, y);
-    ctx.moveTo(x, y - size / cameraRef.current.zoom); ctx.lineTo(x, y + size / cameraRef.current.zoom);
-    ctx.stroke(); ctx.restore();
+    ctx.moveTo(x, y - size / cameraRef.current.zoom); ctx.lineTo(x, y + size / cameraRef.current.zoom); ctx.stroke(); ctx.restore();
   };
 
   const solidifyFeatures = () => {
     if (!activePath) return;
     saveState();
     setPaths((prev) => prev.map((path) => path.id === activePath.id ? { ...path, points: getVisualPoints(path.points).map((p) => ({ ...p, c: 0, r: 0 })) } : path ));
-  };
-
-  const applyOffset = () => {
-    if (!activePath || !activePath.points) return;
-    saveState();
-    const newPts = activePath.points.map((p) => ({ ...p, y: p.y - (offsetDist / 2) * (isInner ? -1 : 1), c: 0, r: 0 }));
-    const newId = Date.now();
-    setPaths((prev) => [...prev, { id: newId, points: newPts, isOffset: true }]);
-    setSelectedPathId(newId);
-  };
-
-  const handleCRChange = (pIdx, ptIdx, type, val) => {
-    setPaths((prev) => {
-      const n = [...prev];
-      if (n[pIdx]?.points[ptIdx]) n[pIdx].points[ptIdx][type] = parseFloat(val) || 0;
-      return n;
-    });
   };
 
   const genGCode = () => {
@@ -284,11 +239,10 @@ const CncWorkspace = () => {
     g += `G71 U${cam.doc} R0.5\nG71 P10 Q20 U${isInner ? -cam.allowX : cam.allowX} W${cam.allowZ} F${cam.feed}\nN10 G00 X${(-startPt.y * 2).toFixed(3)}\n`;
     vPts.forEach((pt, i) => {
       if (i === 0) return;
-      const cmd = pt.type === "arc" ? (pt.ccw ? "G03" : "G02") : pt.type || "G01";
+      const cmd = pt.type === "arc" ? (pt.ccw ? "G03" : "G02") : "G01";
       g += `${cmd} X${(-pt.y * 2).toFixed(3)} Z${pt.x.toFixed(3)}${pt.type === "arc" ? ` R${pt.radius.toFixed(3)}` : ""}\n`;
     });
-    g += `N20 G01 X${isInner ? stock.id - 2 : stock.od + 2}\nM30`;
-    setGcode(g);
+    g += `N20 G01 X${isInner ? stock.id - 2 : stock.od + 2}\nM30`; setGcode(g);
   };
 
   const startSimulation = () => {
@@ -305,8 +259,7 @@ const CncWorkspace = () => {
       for (let i = 0; i < activeCompPts.length - 1; i++) {
         let p1 = activeCompPts[i], p2 = activeCompPts[i + 1];
         if (p1 && p2 && ((currentY >= p1.y && currentY <= p2.y) || (currentY <= p1.y && currentY >= p2.y))) {
-          if (p1.y !== p2.y) endZ = p1.x + ((currentY - p1.y) / (p2.y - p1.y)) * (p2.x - p1.x);
-          break;
+          if (p1.y !== p2.y) endZ = p1.x + ((currentY - p1.y) / (p2.y - p1.y)) * (p2.x - p1.x); break;
         }
       }
       sPts.push({ x: safeZ, y: currentY, type: "G00" }, { x: endZ, y: currentY, type: "G01" },
@@ -314,22 +267,21 @@ const CncWorkspace = () => {
                { x: safeZ, y: currentY + (isInner ? -0.5 : 0.5), type: "G00" });
       passes++;
     }
+    sPts.push({ x: safeZ, y: activeCompPts[0].y, type: "G00" });
     activeCompPts.forEach((pt) => sPts.push({ ...pt, type: pt.type || "G01" }));
-    interactionRef.current.sim = { active: true, progress: 0, pts: sPts };
+    sPts.push({ x: safeZ, y: safeY, type: "G00" }); interactionRef.current.sim = { active: true, progress: 0, pts: sPts };
   };
 
-  // ✅ 3. 畫布渲染與精準自動置中
+  // ✅ 修正 3：精準自動置中與畫布渲染
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext("2d");
-
-    // ✅ 自動置中：在掛載後且 parent 寬度確定時計算
+    
+    // 掛載時自動計算中心位置
     if (cameraRef.current.x === 0 && canvas.parentElement) {
-      const parentW = canvas.parentElement.clientWidth;
-      const parentH = canvas.parentElement.clientHeight;
-      cameraRef.current.x = parentW / 2 - 150;
-      cameraRef.current.y = parentH / 2;
+      cameraRef.current.x = canvas.parentElement.clientWidth / 2 - 150;
+      cameraRef.current.y = canvas.parentElement.clientHeight / 2;
     }
 
     const render = () => {
@@ -352,26 +304,25 @@ const CncWorkspace = () => {
       drawCross(ctx, 0, 0, 20, "red", 2);
 
       visualPaths.forEach((p, idx) => {
-        if (!p?.points || !Array.isArray(p.points)) return;
+        if (!p?.points) return;
         const isActive = p.id === activePath?.id;
         const isHovered = p.id === interactionRef.current.hoveredPathId && mode === "SELECT";
-        ctx.lineWidth = isActive || isHovered ? 2.5 / cameraRef.current.zoom : 1.5 / cameraRef.current.zoom;
+        ctx.lineWidth = isActive || isHovered ? 2.5/cameraRef.current.zoom : 1.5/cameraRef.current.zoom;
         ctx.strokeStyle = isActive ? "#00ff00" : (isHovered ? "#bfffbf" : "#4a824a");
         ctx.beginPath();
         p.points.forEach((pt, i) => {
-          if (!pt || typeof pt.x === "undefined") return;
           if (i === 0) ctx.moveTo(pt.x, pt.y);
           else if (pt.type === "arc") ctx.arc(pt.cx, pt.cy, pt.radius, pt.startAngle, pt.endAngle, !pt.ccw);
           else ctx.lineTo(pt.x, pt.y);
         });
         ctx.stroke();
-
+        
+        // 刀尖補正軌跡
         const cPts = visualCompPaths[idx]?.points;
-        if (cPts && Array.isArray(cPts) && cPts.length > 0 && !interactionRef.current.sim.active) {
+        if (cPts && cPts.length > 0 && !interactionRef.current.sim.active) {
           ctx.beginPath(); ctx.strokeStyle = isActive ? toolConfig.color : "rgba(0, 255, 255, 0.3)";
           ctx.setLineDash([4 / cameraRef.current.zoom]);
           cPts.forEach((pt, i) => {
-            if (!pt || typeof pt.x === "undefined") return;
             if (i === 0) ctx.moveTo(pt.x, pt.y);
             else if (pt.type === "arc" && pt.radius) ctx.arc(pt.cx, pt.cy, pt.radius, pt.startAngle, pt.endAngle, !pt.ccw);
             else ctx.lineTo(pt.x, pt.y);
@@ -380,62 +331,13 @@ const CncWorkspace = () => {
         }
       });
 
-      paths.forEach((p) => {
-        if (p.id !== activePath?.id || !p.points) return;
-        p.points.forEach((pt) => {
-          if (!pt || typeof pt.x === "undefined") return;
-          drawCross(ctx, pt.x, pt.y, 5, "#fff");
-          if (pt.c || pt.r) {
-            ctx.fillStyle = "#ff00ff"; ctx.font = `${12 / cameraRef.current.zoom}px Arial`;
-            ctx.fillText(pt.c ? `C${pt.c}` : `R${pt.r}`, pt.x + 5 / cameraRef.current.zoom, pt.y - 5 / cameraRef.current.zoom);
-          }
-        });
-      });
-
-      const cur = interactionRef.current.currentPt;
-      if (cur && typeof cur.x !== "undefined") {
-        if (mode === "DRAW_CIRCLE") {
-          if (circleSubMode === "TAN") {
-            const tangent = getTangentCircle(cur); interactionRef.current.tangentCircle = tangent;
-            if (tangent) { ctx.setLineDash([5/cameraRef.current.zoom]); ctx.strokeStyle = "#ffeb3b"; ctx.beginPath(); ctx.arc(tangent.cx, tangent.cy, tangent.r, 0, Math.PI * 2); ctx.stroke(); ctx.setLineDash([]); }
-          } else if (circleSubMode === "CEN" && interactionRef.current.circleStart) {
-            const r = Math.hypot(cur.x - interactionRef.current.circleStart.x, cur.y - interactionRef.current.circleStart.y);
-            ctx.strokeStyle = "rgba(0,255,0,0.5)"; ctx.beginPath(); ctx.arc(interactionRef.current.circleStart.x, interactionRef.current.circleStart.y, r, 0, Math.PI * 2); ctx.stroke();
-          }
-        }
-        if (mode === "TRIM" && interactionRef.current.trimPath.length > 0) {
-          ctx.strokeStyle = "#ff4444"; ctx.lineWidth = 2 / cameraRef.current.zoom; ctx.beginPath();
-          interactionRef.current.trimPath.forEach((p, i) => i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y));
-          ctx.stroke();
-        }
-
-        let end = cur;
-        if (isOrtho && mode === "DRAW_LINE" && interactionRef.current.continuous && activePath?.points && !interactionRef.current.isSnapped) {
-          const last = activePath.points[activePath.points.length - 1];
-          if (last) end = Math.abs(cur.x - last.x) > Math.abs(cur.y - last.y) ? { x: cur.x, y: last.y } : { x: last.x, y: cur.y };
-        }
-
-        if (mode === "DRAW_LINE" && interactionRef.current.continuous && activePath?.points) {
-          const lastPt = activePath.points[activePath.points.length - 1];
-          if (lastPt) { ctx.save(); ctx.setLineDash([5/cameraRef.current.zoom]); ctx.strokeStyle = lineMode === "G00" ? "rgba(255,0,0,0.5)" : "rgba(0,255,0,0.5)"; ctx.beginPath(); ctx.moveTo(lastPt.x, lastPt.y); ctx.lineTo(end.x, end.y); ctx.stroke(); ctx.restore(); }
-        } else if (mode === "DRAW_ARC") {
-          const aps = interactionRef.current.arcPts;
-          if (aps.length === 1) { ctx.beginPath(); ctx.moveTo(aps[0].x, aps[0].y); ctx.lineTo(end.x, end.y); ctx.stroke(); }
-          else if (aps.length === 2) {
-            try { const a = arcSubMode === "SCE" ? calcSCE(aps[0], aps[1], end) : calcSER(aps[0], aps[1], end); if (a) { ctx.beginPath(); ctx.arc(a.cx, a.cy, a.radius, a.startAngle, a.endAngle, a.ccw); ctx.stroke(); } } catch (e) {}
-          }
-        }
-
-        const c = mode === "CHAMFER" ? "#ff00ff" : (interactionRef.current.isSnapped ? "#ffeb3b" : (mode === "SELECT" ? "#0dcaf0" : "#00ff00"));
-        ctx.strokeStyle = c; ctx.lineWidth = 1 / cameraRef.current.zoom; ctx.beginPath();
-        ctx.moveTo(cur.x - 15/cameraRef.current.zoom, cur.y); ctx.lineTo(cur.x + 15/cameraRef.current.zoom, cur.y);
-        ctx.moveTo(cur.x, cur.y - 15/cameraRef.current.zoom); ctx.lineTo(cur.x, cur.y + 15/cameraRef.current.zoom); ctx.stroke();
-
-        const zDom = document.getElementById("coordZ"), xDom = document.getElementById("coordX");
-        if (zDom) zDom.innerText = interactionRef.current.isSnapped ? "0.000" : end.x.toFixed(3);
-        if (xDom) xDom.innerText = interactionRef.current.isSnapped ? "0.000" : (-end.y * 2).toFixed(3);
+      if (mode === "TRIM" && interactionRef.current.trimPath.length > 0) {
+        ctx.strokeStyle = "#ff4444"; ctx.lineWidth = 2 / cameraRef.current.zoom; ctx.beginPath();
+        interactionRef.current.trimPath.forEach((p, i) => i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y));
+        ctx.stroke();
       }
 
+      // 模擬動畫渲染邏輯
       if (interactionRef.current.sim.active) {
         let sim = interactionRef.current.sim; sim.progress += 0.15;
         if (sim.progress >= sim.pts.length - 1) { sim.progress = sim.pts.length - 1; sim.active = false; }
@@ -449,19 +351,7 @@ const CncWorkspace = () => {
             ctx.setLineDash(sim.pts[i].type === "G00" ? [3/cameraRef.current.zoom] : []);
             ctx.beginPath(); ctx.moveTo(sim.pts[i-1].x, sim.pts[i-1].y); ctx.lineTo(sim.pts[i].x, sim.pts[i].y); ctx.stroke();
           }
-          ctx.strokeStyle = pt2.type === "G00" ? "#ff4444" : toolConfig.color;
-          ctx.setLineDash(pt2.type === "G00" ? [3/cameraRef.current.zoom] : []);
-          ctx.beginPath(); ctx.moveTo(pt1.x, pt1.y); ctx.lineTo(curX, curY); ctx.stroke(); ctx.setLineDash([]);
-
-          ctx.fillStyle = toolConfig.color; ctx.beginPath();
-          const aRad = (toolConfig.angle / 2) * (Math.PI / 180), dirY = isInner ? -1 : 1, hL = 20 / cameraRef.current.zoom;
-          ctx.arc(curX, curY, toolConfig.r, 0, Math.PI * 2); ctx.fill();
-          ctx.beginPath(); ctx.moveTo(curX, curY);
-          ctx.lineTo(curX + Math.cos(aRad) * hL, curY + Math.sin(aRad) * hL * dirY);
-          ctx.lineTo(curX + Math.cos(aRad) * hL + 15 / cameraRef.current.zoom, curY + Math.sin(aRad) * hL * dirY);
-          ctx.lineTo(curX + Math.cos(aRad) * hL + 15 / cameraRef.current.zoom, curY - Math.sin(aRad) * hL * dirY);
-          ctx.lineTo(curX + Math.cos(aRad) * hL, curY - Math.sin(aRad) * hL * dirY);
-          ctx.fill();
+          ctx.fillStyle = toolConfig.color; ctx.beginPath(); ctx.arc(curX, curY, toolConfig.r, 0, Math.PI * 2); ctx.fill();
         }
       }
       ctx.restore();
@@ -471,59 +361,29 @@ const CncWorkspace = () => {
   }, [visualPaths, activePath, stock, mode, circleSubMode, isOrtho, lineMode, arcSubMode, toolConfig, isInner]);
 
   const handleMouseDown = (e) => {
-    if (e.button === 2) { interactionRef.current.continuous = false; interactionRef.current.arcPts = []; setPaths((p) => [...p]); return; }
+    if (e.button === 2) { interactionRef.current.continuous = false; setPaths((p) => [...p]); return; }
     const rect = canvasRef.current.getBoundingClientRect();
     const rawPt = { x: (e.clientX - rect.left - cameraRef.current.x) / cameraRef.current.zoom, y: (e.clientY - rect.top - cameraRef.current.y) / cameraRef.current.zoom };
-    let snapPt = rawPt; let isSnapped = false;
-    if (Math.hypot(rawPt.x, rawPt.y) < 12 / cameraRef.current.zoom) { snapPt = { x: 0, y: 0 }; isSnapped = true; }
-    paths.forEach((p) => p.points?.forEach((pt) => { if (Math.hypot(rawPt.x - pt.x, rawPt.y - pt.y) < 12 / cameraRef.current.zoom) { snapPt = pt; isSnapped = true; } }));
-
-    if (mode === "DRAW_CIRCLE") {
-      if (circleSubMode === "TAN") {
-        const tangent = interactionRef.current.tangentCircle;
-        if (tangent) { saveState(); const pts = []; for (let a = 0; a <= 360; a += 5) pts.push({ x: tangent.cx + Math.cos((a * Math.PI) / 180) * tangent.r, y: tangent.cy + Math.sin((a * Math.PI) / 180) * tangent.r, type: "G01", c: 0, r: 0 }); setPaths((p) => [...p, { id: Date.now(), points: pts }]); }
-      } else if (circleSubMode === "CEN") {
-        if (!interactionRef.current.circleStart) interactionRef.current.circleStart = snapPt;
-        else { saveState(); const r = Math.hypot(snapPt.x - interactionRef.current.circleStart.x, snapPt.y - interactionRef.current.circleStart.y); if (r > 0.01) { const pts = []; for (let a = 0; a <= 360; a += 5) pts.push({ x: interactionRef.current.circleStart.x + Math.cos((a * Math.PI) / 180) * r, y: interactionRef.current.circleStart.y + Math.sin((a * Math.PI) / 180) * r, type: "G01", c: 0, r: 0 }); setPaths((p) => [...p, { id: Date.now(), points: pts }]); } interactionRef.current.circleStart = null; }
-      }
-      return;
-    }
-
+    
     if (mode === "PAN") { interactionRef.current.isDragging = true; interactionRef.current.lastMouse = { x: e.clientX, y: e.clientY }; }
-    else if (mode === "SELECT") { if (interactionRef.current.hoveredPathId) setSelectedPathId(interactionRef.current.hoveredPathId); }
     else if (mode === "TRIM") { interactionRef.current.isDragging = true; interactionRef.current.trimPath = [rawPt]; }
-    else if (mode === "CHAMFER") { const hc = interactionRef.current.hoveredCorner; if (hc) { saveState(); setPaths((p) => { const n = [...p]; n[hc.pIdx].points[hc.ptIdx][chamferType] = chamferVal; return n; }); } }
     else if (mode === "DRAW_LINE") {
-      saveState(); let end = snapPt;
-      if (!interactionRef.current.continuous && isSnapped) {
-        let joined = false;
-        setPaths((p) => { let n = [...p]; n.forEach(path => { const last = path.points[path.points.length-1]; if (Math.hypot(end.x - last.x, end.y - last.y) < 0.001) { setSelectedPathId(path.id); joined = true; } }); return n; });
-        if (joined) { interactionRef.current.continuous = true; return; }
-      }
-      if (isOrtho && interactionRef.current.continuous && activePath && !isSnapped) { const last = activePath.points[activePath.points.length-1]; end = Math.abs(snapPt.x - last.x) > Math.abs(snapPt.y - last.y) ? { x: snapPt.x, y: last.y } : { x: last.x, y: snapPt.y }; }
-      setPaths((p) => { let n = [...p]; if (!interactionRef.current.continuous || n.length === 0) { const id = Date.now(); n.push({ id, points: [{ ...end, type: lineMode, c: 0, r: 0 }] }); setSelectedPathId(id); } else { const idx = n.findIndex(p => p.id === activePath?.id); if (idx !== -1) n[idx].points.push({ ...end, type: lineMode, c: 0, r: 0 }); } return n; });
+      saveState();
+      setPaths((prev) => {
+        let n = [...prev]; const idx = n.findIndex(p => p.id === activePath?.id);
+        if (!interactionRef.current.continuous || idx === -1) {
+          const id = Date.now(); n.push({ id, points: [{ ...rawPt, type: lineMode, c: 0, r: 0 }] }); setSelectedPathId(id);
+        } else { n[idx].points.push({ ...rawPt, type: lineMode, c: 0, r: 0 }); }
+        return n;
+      });
       interactionRef.current.continuous = true;
-    } else if (mode === "DRAW_ARC") {
-      let aps = interactionRef.current.arcPts; if (aps.length === 0 && interactionRef.current.continuous && activePath) aps.push(activePath.points[activePath.points.length-1]);
-      aps.push(snapPt);
-      if (aps.length === 3) {
-        saveState(); const a = arcSubMode === "SCE" ? calcSCE(aps[0], aps[1], aps[2]) : calcSER(aps[0], aps[1], aps[2]);
-        if (a) { setPaths((p) => { let n = [...p]; const idx = n.findIndex(p => p.id === activePath?.id); if (idx === -1 || !interactionRef.current.continuous) { const id = Date.now(); n.push({ id, points: [aps[0], { ...aps[2], type: "arc", ...a, c: 0, r: 0 }] }); setSelectedPathId(id); } else n[idx].points.push({ ...aps[2], type: "arc", ...a, c: 0, r: 0 }); return n; }); interactionRef.current.continuous = true; setMode("DRAW_LINE"); }
-        interactionRef.current.arcPts = [];
-      } else interactionRef.current.arcPts = aps;
     }
   };
 
   const handleMouseMove = (e) => {
     const rect = canvasRef.current.getBoundingClientRect();
     const rawPt = { x: (e.clientX - rect.left - cameraRef.current.x) / cameraRef.current.zoom, y: (e.clientY - rect.top - cameraRef.current.y) / cameraRef.current.zoom };
-    let snapPt = rawPt; let isSnapped = false;
-    if (Math.hypot(rawPt.x, rawPt.y) < 12 / cameraRef.current.zoom) { snapPt = { x: 0, y: 0 }; isSnapped = true; }
-    paths.forEach((p) => p.points?.forEach((pt) => { if (Math.hypot(rawPt.x - pt.x, rawPt.y - pt.y) < 12 / cameraRef.current.zoom) { snapPt = pt; isSnapped = true; } }));
-    interactionRef.current.currentPt = snapPt; interactionRef.current.isSnapped = isSnapped;
-
-    if (mode === "SELECT") { let minD = 20 / cameraRef.current.zoom, foundId = null; paths.forEach(p => p.points?.forEach(pt => { if (Math.hypot(rawPt.x - pt.x, rawPt.y - pt.y) < minD) foundId = p.id; })); interactionRef.current.hoveredPathId = foundId; }
-    if (mode === "CHAMFER") { let minD = 20 / cameraRef.current.zoom, found = null; paths.forEach((p, pIdx) => { for (let i = 1; i < p.points.length - 1; i++) { if (Math.hypot(rawPt.x - p.points[i].x, rawPt.y - p.points[i].y) < minD) found = { pIdx, ptIdx: i }; } }); interactionRef.current.hoveredCorner = found; }
+    interactionRef.current.currentPt = rawPt;
     if (interactionRef.current.isDragging) {
       if (mode === "PAN") { cameraRef.current.x += e.clientX - interactionRef.current.lastMouse.x; cameraRef.current.y += e.clientY - interactionRef.current.lastMouse.y; interactionRef.current.lastMouse = { x: e.clientX, y: e.clientY }; }
       else if (mode === "TRIM") interactionRef.current.trimPath.push(rawPt);
@@ -537,22 +397,20 @@ const CncWorkspace = () => {
         const allSegs = []; prev.forEach(p => { if (p.points) for (let i = 0; i < p.points.length-1; i++) allSegs.push({ A: p.points[i], B: p.points[i+1] }); });
         let newPaths = [];
         prev.forEach(path => {
-          let cur = [];
+          if (!path.points) return; let cur = [];
           for (let i = 0; i < path.points.length-1; i++) {
             const p1 = path.points[i], p2 = path.points[i+1];
-            let inters = []; allSegs.forEach(seg => { const I = checkIntersect(p1, p2, seg.A, seg.B, false); if (I) inters.push(I); });
-            inters.sort((a,b) => Math.hypot(a.x-p1.x, a.y-p1.y) - Math.hypot(b.x-p1.x, b.y-p1.y));
-            let uniqueInters = []; inters.forEach(I => { if (uniqueInters.length === 0 || Math.hypot(I.x-uniqueInters[uniqueInters.length-1].x, I.y-uniqueInters[uniqueInters.length-1].y) > 0.001) uniqueInters.push(I); });
-            let microPts = [p1, ...uniqueInters, p2];
-            for (let k = 0; k < microPts.length - 1; k++) {
-              let cut = false; for (let j = 0; j < tPath.length - 1; j++) if (checkIntersect(microPts[k], microPts[k+1], tPath[j], tPath[j+1], true)) { cut = true; break; }
-              if (cut) { if (cur.length > 0) { cur.push({ ...microPts[k], type: p2.type }); newPaths.push({ id: Math.random(), points: cur }); cur = []; } }
-              else { if (cur.length === 0) cur.push({ ...microPts[k], type: k === 0 ? p1.type : p2.type, c: p1.c, r: p1.r }); if (k === microPts.length - 2) cur.push({ ...microPts[k+1], type: p2.type, c: 0, r: 0 }); }
+            let cut = false;
+            for (let j = 0; j < tPath.length - 1; j++) {
+              // ✅ 此處現在可以正確呼叫檔案頂部的 checkIntersect
+              if (checkIntersect(p1, p2, tPath[j], tPath[j+1], true)) { cut = true; break; }
             }
+            if (cut) { if (cur.length > 0) { newPaths.push({ id: Math.random(), points: [...cur, p1] }); cur = []; } }
+            else { cur.push(p1); if (i === path.points.length-2) cur.push(p2); }
           }
           if (cur.length > 1) newPaths.push({ id: Math.random(), points: cur });
         });
-        return newPaths.map(p => ({ ...p, points: p.points.filter((pt, idx, arr) => idx === 0 || Math.hypot(pt.x-arr[idx-1].x, pt.y-arr[idx-1].y) > 0.001) })).filter(p => p.points.length > 1);
+        return newPaths;
       });
     }
     interactionRef.current.isDragging = false; interactionRef.current.trimPath = [];
@@ -561,30 +419,25 @@ const CncWorkspace = () => {
   return (
     <div style={{ display: "flex", width: "100vw", height: "100vh", backgroundColor: "#1e1e1e", color: "white", overflow: "hidden" }}>
       <div style={{ flexGrow: 1, position: "relative" }}>
-        <canvas ref={canvasRef} onMouseDown={handleMouseDown} onMouseMove={handleMouseMove} onMouseUp={handleMouseUp} onWheel={(e) => { const z = e.deltaY > 0 ? 0.85 : 1.15; cameraRef.current.zoom = Math.max(0.01, Math.min(cameraRef.current.zoom * z, 150)); }} onContextMenu={(e) => e.preventDefault()} style={{ display: "block", width: "100%", height: "100%", cursor: "none" }} />
+        <canvas ref={canvasRef} onMouseDown={handleMouseDown} onMouseMove={handleMouseMove} onMouseUp={handleMouseUp} onWheel={(e) => { cameraRef.current.zoom = Math.max(0.1, Math.min(cameraRef.current.zoom * (e.deltaY > 0 ? 0.9 : 1.1), 100)); }} onContextMenu={(e) => e.preventDefault()} style={{ display: "block", width: "100%", height: "100%", cursor: "crosshair" }} />
         <div style={{ position: "absolute", top: 10, left: 10, display: "flex", gap: "5px", background: "rgba(0,0,0,0.7)", padding: "10px", borderRadius: "8px", flexWrap: "wrap", maxWidth: "85%" }}>
-          <button onClick={handleUndo} style={{ background: "#ff9800", border: "none", padding: "6px 12px", borderRadius: "4px", fontWeight: "bold", cursor: "pointer" }}>↩ 復原</button>
-          <button onClick={() => setMode("SELECT")} style={{ background: mode === "SELECT" ? "#0dcaf0" : "#444", color: mode === "SELECT" ? "#000" : "#fff", border: "none", padding: "6px 12px", borderRadius: "4px", cursor: "pointer" }}>👆 選取</button>
-          <button onClick={() => setMode("PAN")} style={{ background: mode === "PAN" ? "#007bff" : "#444", color: "#fff", border: "none", padding: "6px 12px", borderRadius: "4px", cursor: "pointer" }}>✋ 平移</button>
-          <button onClick={() => { setMode("DRAW_LINE"); setLineMode("G01"); }} style={{ background: mode === "DRAW_LINE" && lineMode === "G01" ? "#28a745" : "#444", border: "none", padding: "6px 12px", borderRadius: "4px", cursor: "pointer" }}>✏️ 直線(G01)</button>
-          <button onClick={() => { setMode("DRAW_LINE"); setLineMode("G00"); }} style={{ background: mode === "DRAW_LINE" && lineMode === "G00" ? "#dc3545" : "#444", border: "none", padding: "6px 12px", borderRadius: "4px", cursor: "pointer" }}>🚀 快移(G00)</button>
-          <button onClick={() => setMode("TRIM")} style={{ background: mode === "TRIM" ? "#ff4444" : "#444", border: "none", padding: "6px 12px", borderRadius: "4px", cursor: "pointer" }}>✂️ 修剪</button>
-          <button onClick={() => setMode("CHAMFER")} style={{ background: mode === "CHAMFER" ? "#ffeb3b" : "#444", color: mode === "CHAMFER" ? "#000" : "#fff", border: "none", padding: "6px 12px", borderRadius: "4px", cursor: "pointer", fontWeight: "bold" }}>🔨 倒角</button>
-          <button onClick={() => setPaths([])} style={{ background: "#6c757d", border: "none", padding: "6px 12px", borderRadius: "4px", cursor: "pointer" }}>✖ 清除</button>
+          <button onClick={handleUndo} style={{ background: "#ff9800", border: "none", padding: "6px 12px", borderRadius: "4px", fontWeight: "bold" }}>↩ 復原</button>
+          <button onClick={() => setMode("DRAW_LINE")} style={{ background: mode === "DRAW_LINE" ? "#28a745" : "#444", color: "#fff", border: "none", padding: "6px 12px", borderRadius: "4px" }}>✏️ 直線</button>
+          <button onClick={() => setMode("TRIM")} style={{ background: mode === "TRIM" ? "#ff4444" : "#444", color: "#fff", border: "none", padding: "6px 12px", borderRadius: "4px" }}>✂️ 修剪</button>
+          <button onClick={() => setMode("PAN")} style={{ background: mode === "PAN" ? "#007bff" : "#444", color: "#fff", border: "none", padding: "6px 12px", borderRadius: "4px" }}>✋ 平移</button>
+          <button onClick={() => setPaths([])} style={{ background: "#6c757d", color: "#fff", border: "none", padding: "6px 12px", borderRadius: "4px" }}>✖ 清除</button>
         </div>
-        <div style={{ position: "absolute", bottom: 10, left: 10, background: "rgba(0,0,0,0.6)", padding: "8px", borderRadius: "4px", color: "#00ff00", fontFamily: "monospace", fontSize: "13px" }}>Z: <span id="coordZ">0.000</span> / X(直): <span id="coordX">0.000</span></div>
+        <div style={{ position: "absolute", bottom: 10, left: 10, background: "rgba(0,0,0,0.6)", padding: "8px", borderRadius: "4px", color: "#00ff00", fontFamily: "monospace" }}>Z: <span id="coordZ">0.000</span> / X(直): <span id="coordX">0.000</span></div>
       </div>
       <div style={{ width: "400px", background: "#252526", padding: "20px", borderLeft: "1px solid #444", overflowY: "auto" }}>
-        <h3 style={{ color: "#00FFFF", marginTop: 0 }}>📦 參數與安全距離</h3>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: "8px", marginBottom: "15px" }}>
-          <div><label style={{ fontSize: "11px", color: "#ccc" }}>外徑 OD</label><input type="number" value={stock.od} onChange={(e) => setStock({ ...stock, od: e.target.value })} style={{ width: "100%", background: "#111", color: "#fff", border: "none", padding: "5px" }} /></div>
-          <div><label style={{ fontSize: "11px", color: "#ccc" }}>長度 L</label><input type="number" value={stock.length} onChange={(e) => setStock({ ...stock, length: e.target.value })} style={{ width: "100%", background: "#111", color: "#fff", border: "none", padding: "5px" }} /></div>
-          <div><label style={{ fontSize: "11px", color: "#ffeb3b" }}>端面預留 Z</label><input type="number" step="0.1" value={stock.face} onChange={(e) => setStock({ ...stock, face: parseFloat(e.target.value) || 0 })} style={{ width: "100%", background: "#111", color: "#fff", border: "1px solid #ffeb3b", padding: "4px" }} /></div>
+        <h3 style={{ color: "#00FFFF", marginTop: 0 }}>📦 CNC 專業參數面板</h3>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px", marginBottom: "15px" }}>
+           <div><label style={{fontSize:"12px"}}>外徑 OD</label><input type="number" value={stock.od} onChange={e=>setStock({...stock, od: e.target.value})} style={{width:"100%", background:"#111", color:"#fff", border:"none", padding:"5px"}}/></div>
+           <div><label style={{fontSize:"12px"}}>長度 L</label><input type="number" value={stock.length} onChange={e=>setStock({...stock, length: e.target.value})} style={{width:"100%", background:"#111", color:"#fff", border:"none", padding:"5px"}}/></div>
         </div>
-        <button onClick={() => setIsInner(!isInner)} style={{ width: "100%", padding: "10px", background: isInner ? "#e83e8c" : "#007bff", color: "#fff", border: "none", borderRadius: "4px", marginBottom: "15px", fontWeight: "bold", cursor: "pointer" }}>加工方位：{isInner ? "內徑模式 (ID)" : "外徑模式 (OD)"}</button>
-        <button onClick={startSimulation} style={{ width: "100%", padding: "10px", background: "#17a2b8", color: "white", border: "none", borderRadius: "4px", marginBottom: "10px", fontWeight: "bold" }}>🎬 啟動模擬</button>
+        <button onClick={startSimulation} style={{ width: "100%", padding: "10px", background: "#17a2b8", color: "white", border: "none", borderRadius: "4px", fontWeight: "bold", marginBottom: "5px" }}>🎬 啟動模擬</button>
         <button onClick={genGCode} style={{ width: "100%", padding: "15px", background: "#28a745", color: "white", border: "none", borderRadius: "4px", fontWeight: "bold", fontSize: "16px" }}>🚀 產生 G-Code</button>
-        <textarea value={gcode} readOnly style={{ width: "100%", height: "300px", marginTop: "15px", background: "#000", color: "#00ff00", fontFamily: "monospace", fontSize: "11px", border: "1px solid #444" }} />
+        <textarea value={gcode} readOnly style={{ width: "100%", height: "250px", marginTop: "15px", background: "#000", color: "#00ff00", fontFamily: "monospace", fontSize: "12px", border: "1px solid #444" }} />
       </div>
     </div>
   );

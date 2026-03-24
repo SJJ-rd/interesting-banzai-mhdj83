@@ -19,6 +19,10 @@ const CncWorkspace = () => {
   const [paths, setPaths] = useState([]);
   const [history, setHistory] = useState([]);
   const [selectedPathId, setSelectedPathId] = useState(null);
+  
+  // 🔥 新增：儲存選取範圍的起始與結束點索引
+  const [selRange, setSelRange] = useState({ pathId: null, p1: null, p2: null });
+
   const [isInner, setIsInner] = useState(false);
   const [isOrtho, setIsOrtho] = useState(false);
   const [bgImage, setBgImage] = useState(null);
@@ -61,6 +65,8 @@ const CncWorkspace = () => {
     circleStart: null,
     tangentCircle: null,
     arcPts: [],
+    hoveredPathId: null,
+    hoveredPtIdx: null,
     sim: { active: false, progress: 0, pts: [] },
   });
 
@@ -105,7 +111,6 @@ const CncWorkspace = () => {
     if (pts.length < 2) return pts.map((p) => ({ ...p }));
 
     let res = [];
-    // 🔥 偵測是否為封閉路徑 (起點與終點重合)
     const isClosed =
       pts.length > 2 &&
       Math.hypot(
@@ -123,7 +128,6 @@ const CncWorkspace = () => {
       let currentC = pt.c || 0;
       let currentR = pt.r || 0;
 
-      // 🔥 處理封閉路徑的起點/終點倒角
       if (isClosed && (i === 0 || i === pts.length - 1)) {
         currentC = pts[0].c || pts[pts.length - 1].c || 0;
         currentR = pts[0].r || pts[pts.length - 1].r || 0;
@@ -202,10 +206,9 @@ const CncWorkspace = () => {
         }
 
         if (i === 0) {
-          closedCornerPA = pA; // 記下封閉路徑起始點取代後的真實坐標
+          closedCornerPA = pA; 
           res.push(pA, pB);
         } else if (i === pts.length - 1) {
-          // 如果是最後一點，無縫接回起始點的 pA
           if (closedCornerPA) res.push({ ...closedCornerPA });
           else res.push(pA);
         } else {
@@ -231,6 +234,20 @@ const CncWorkspace = () => {
     () => paths.find((p) => p.id === selectedPathId) || paths[paths.length - 1],
     [paths, selectedPathId]
   );
+
+  // 🔥 新增：擷取出真正要用來計算加工的區段 (CAM Path)
+  const camPathPts = useMemo(() => {
+    if (!activePath || !activePath.points) return [];
+    // 如果有自訂的範圍選取，就只截取該段 Base 點來計算
+    if (selRange.pathId === activePath.id && selRange.p1 !== null && selRange.p2 !== null) {
+      const min = Math.min(selRange.p1, selRange.p2);
+      const max = Math.max(selRange.p1, selRange.p2);
+      const sliced = activePath.points.slice(min, max + 1);
+      return getVisualPoints(sliced);
+    }
+    // 否則就回傳整條完整路徑
+    return getVisualPoints(activePath.points);
+  }, [activePath, selRange]);
 
   const getOffsetPoints = (pts, toolR, isInner) => {
     if (!pts || !Array.isArray(pts) || pts.length < 2) return [];
@@ -274,12 +291,10 @@ const CncWorkspace = () => {
     [visualPaths, toolConfig.r, isInner]
   );
   
-  const activeCompPts = useMemo(
-    () =>
-      visualCompPaths[paths.findIndex((p) => p.id === activePath?.id)]
-        ?.points || [],
-    [activePath, visualCompPaths, paths]
-  );
+  // 🔥 新增：擷取出加工範圍專屬的刀補路徑 (CAM Comp Path)
+  const camCompPts = useMemo(() => {
+    return getOffsetPoints(camPathPts, toolConfig.r, isInner);
+  }, [camPathPts, toolConfig.r, isInner]);
 
   const getTangentCircle = (mousePt) => {
     let best = null;
@@ -312,7 +327,6 @@ const CncWorkspace = () => {
     return best;
   };
 
-  // 🔥 修正：強制計算最短路徑
   const calcSCE = (p1, center, p3) => {
     if (!p1 || !center || !p3) return null;
     const r = Math.hypot(p1.x - center.x, p1.y - center.y);
@@ -327,12 +341,11 @@ const CncWorkspace = () => {
       radius: r,
       startAngle,
       endAngle,
-      ccw: diff > 0, // 確保 G-Code 輸出精準方向
-      drawCCW: diff < 0, // 確保畫布繪製短路徑
+      ccw: diff > 0, 
+      drawCCW: diff < 0, 
     };
   };
 
-  // 🔥 修正：強制計算最短路徑
   const calcSER = (p1, p2, mouse) => {
     if (!p1 || !p2 || !mouse) return null;
     const d = Math.hypot(p2.x - p1.x, p2.y - p1.y);
@@ -437,12 +450,11 @@ const CncWorkspace = () => {
   };
 
   const genGCode = () => {
-    if (!activePath || !activePath.points || activePath.points.length < 2) {
+    if (!camPathPts || camPathPts.length < 2) {
       alert("請畫出或選定一條包含2點以上的加工路徑！");
       return;
     }
-    const vPts = getVisualPoints(activePath.points);
-    if (!vPts || vPts.length === 0) return;
+    const vPts = camPathPts;
     const startPt = vPts[0];
     const safeZ = Math.max(startPt.x, stock.face) + cam.safeDist;
     const safeX = isInner ? stock.id - cam.safeDist : stock.od + cam.safeDist;
@@ -471,12 +483,13 @@ const CncWorkspace = () => {
       return;
     }
 
-    if (!activeCompPts || activeCompPts.length < 2) {
-      alert("請選擇一條欲模擬的加工路徑（可使用選取工具點擊綠色線條）！");
+    if (!camCompPts || camCompPts.length < 2) {
+      alert("請選取一條欲模擬的加工區段！");
       return;
     }
     
     let sPts = [];
+    const activeCompPts = camCompPts;
     const safeZ = Math.max(activeCompPts[0].x, stock.face) + cam.safeDist;
     const startDia = isInner ? stock.id : stock.od;
     const safeY = -(startDia + (isInner ? -cam.safeDist : cam.safeDist)) / 2;
@@ -589,66 +602,33 @@ const CncWorkspace = () => {
       visualPaths.forEach((p, idx) => {
         if (!p?.points || !Array.isArray(p.points)) return;
         const isActive = p.id === activePath?.id;
-        const isHovered =
-          p.id === interactionRef.current.hoveredPathId && mode === "SELECT";
-        ctx.lineWidth =
-          isActive || isHovered
-            ? 2.5 / cameraRef.current.zoom
-            : 1.5 / cameraRef.current.zoom;
-        ctx.strokeStyle = isActive
-          ? "#00ff00"
-          : isHovered
-          ? "#bfffbf"
-          : "#4a824a";
+        const isHovered = p.id === interactionRef.current.hoveredPathId && mode === "SELECT";
+        
+        const hasSubSelection = isActive && selRange.p1 !== null && selRange.p2 !== null;
+
+        // 🔥 繪製完整路徑底色 (如果有選取範圍，整體變暗綠色)
+        ctx.lineWidth = (isActive || isHovered) ? 2.5 / cameraRef.current.zoom : 1.5 / cameraRef.current.zoom;
+        ctx.strokeStyle = isActive ? (hasSubSelection ? "#1b401b" : "#00ff00") : isHovered ? "#bfffbf" : "#4a824a";
+        
         ctx.beginPath();
         p.points.forEach((pt, i) => {
-          if (!pt || typeof pt.x === "undefined" || typeof pt.y === "undefined")
-            return;
-          
+          if (!pt || typeof pt.x === "undefined" || typeof pt.y === "undefined") return;
           if (i === 0) ctx.moveTo(pt.x, pt.y);
-          else if (pt.type === "arc")
-            ctx.arc(
-              pt.cx,
-              pt.cy,
-              pt.radius,
-              pt.startAngle,
-              pt.endAngle,
-              pt.drawCCW !== undefined ? pt.drawCCW : !pt.ccw
-            );
+          else if (pt.type === "arc") ctx.arc(pt.cx, pt.cy, pt.radius, pt.startAngle, pt.endAngle, pt.drawCCW !== undefined ? pt.drawCCW : !pt.ccw);
           else ctx.lineTo(pt.x, pt.y);
         });
         ctx.stroke();
 
+        // 🔥 繪製完整刀補路徑 (稍微暗色當參考)
         const cPts = visualCompPaths[idx]?.points;
-        if (
-          cPts &&
-          Array.isArray(cPts) &&
-          cPts.length > 0 &&
-          !interactionRef.current.sim.active
-        ) {
+        if (cPts && Array.isArray(cPts) && cPts.length > 0 && !interactionRef.current.sim.active) {
           ctx.beginPath();
-          ctx.strokeStyle = isActive
-            ? toolConfig.color
-            : "rgba(0, 255, 255, 0.3)";
+          ctx.strokeStyle = isActive ? (hasSubSelection ? "rgba(0, 255, 255, 0.1)" : toolConfig.color) : "rgba(0, 255, 255, 0.2)";
           ctx.setLineDash([4 / cameraRef.current.zoom]);
           cPts.forEach((pt, i) => {
-            if (
-              !pt ||
-              typeof pt.x === "undefined" ||
-              typeof pt.y === "undefined"
-            )
-              return;
-            
+            if (!pt || typeof pt.x === "undefined" || typeof pt.y === "undefined") return;
             if (i === 0) ctx.moveTo(pt.x, pt.y);
-            else if (pt.type === "arc" && pt.radius)
-              ctx.arc(
-                pt.cx,
-                pt.cy,
-                pt.radius,
-                pt.startAngle,
-                pt.endAngle,
-                pt.drawCCW !== undefined ? pt.drawCCW : !pt.ccw
-              );
+            else if (pt.type === "arc" && pt.radius) ctx.arc(pt.cx, pt.cy, pt.radius, pt.startAngle, pt.endAngle, pt.drawCCW !== undefined ? pt.drawCCW : !pt.ccw);
             else ctx.lineTo(pt.x, pt.y);
           });
           ctx.stroke();
@@ -656,16 +636,48 @@ const CncWorkspace = () => {
         }
       });
 
+      // 🔥 高亮選取的加工範圍 (Bright Green / Bright Cyan)
+      if (activePath && camPathPts.length > 0) {
+        const hasSubSelection = selRange.pathId === activePath.id && selRange.p1 !== null && selRange.p2 !== null;
+        if (hasSubSelection) {
+          ctx.lineWidth = 3 / cameraRef.current.zoom;
+          ctx.strokeStyle = "#00ff00"; // 明亮的亮綠色
+          ctx.beginPath();
+          camPathPts.forEach((pt, i) => {
+            if (i === 0) ctx.moveTo(pt.x, pt.y);
+            else if (pt.type === "arc") ctx.arc(pt.cx, pt.cy, pt.radius, pt.startAngle, pt.endAngle, pt.drawCCW !== undefined ? pt.drawCCW : !pt.ccw);
+            else ctx.lineTo(pt.x, pt.y);
+          });
+          ctx.stroke();
+
+          if (camCompPts.length > 0 && !interactionRef.current.sim.active) {
+            ctx.beginPath();
+            ctx.strokeStyle = toolConfig.color;
+            ctx.setLineDash([4 / cameraRef.current.zoom]);
+            camCompPts.forEach((pt, i) => {
+              if (i === 0) ctx.moveTo(pt.x, pt.y);
+              else if (pt.type === "arc" && pt.radius) ctx.arc(pt.cx, pt.cy, pt.radius, pt.startAngle, pt.endAngle, pt.drawCCW !== undefined ? pt.drawCCW : !pt.ccw);
+              else ctx.lineTo(pt.x, pt.y);
+            });
+            ctx.stroke();
+            ctx.setLineDash([]);
+          }
+        }
+      }
+
       paths.forEach((p) => {
         if (p.id !== activePath?.id || !p.points) return;
-        // 🔥 確保封閉路徑的最後一點不要重複顯示 C/R 文字
         const isClosed = p.points.length > 2 && Math.hypot(p.points[0].x - p.points[p.points.length-1].x, p.points[0].y - p.points[p.points.length-1].y) < 0.001;
         
         p.points.forEach((pt, i) => {
           if (!pt || typeof pt.x === "undefined") return;
           if (isClosed && i === p.points.length - 1) return; 
 
-          drawCross(ctx, pt.x, pt.y, 5, "#fff");
+          // 🔥 標示出選取範圍的端點
+          const isSelectedEndPt = selRange.pathId === p.id && (selRange.p1 === i || selRange.p2 === i);
+          
+          drawCross(ctx, pt.x, pt.y, isSelectedEndPt ? 10 : 5, isSelectedEndPt ? "#ffeb3b" : "#fff", isSelectedEndPt ? 2 : 1);
+          
           if (pt.c || pt.r) {
             ctx.fillStyle = "#ff00ff";
             ctx.font = `${12 / cameraRef.current.zoom}px Arial`;
@@ -900,7 +912,11 @@ const CncWorkspace = () => {
     };
   }, [
     visualPaths,
+    visualCompPaths,
     activePath,
+    camPathPts,
+    camCompPts,
+    selRange,
     stock,
     mode,
     circleSubMode,
@@ -995,8 +1011,27 @@ const CncWorkspace = () => {
       interactionRef.current.isDragging = true;
       interactionRef.current.lastMouse = { x: e.clientX, y: e.clientY };
     } else if (mode === "SELECT") {
-      if (interactionRef.current.hoveredPathId)
-        setSelectedPathId(interactionRef.current.hoveredPathId);
+      // 🔥 選取模式：更新點擊範圍的邏輯
+      const hId = interactionRef.current.hoveredPathId;
+      const hIdx = interactionRef.current.hoveredPtIdx;
+      if (hId !== null && hIdx !== null) {
+        setSelectedPathId(hId);
+        setSelRange((prev) => {
+          if (prev.pathId !== hId) {
+            return { pathId: hId, p1: hIdx, p2: null }; // 點選新的路徑點，成為起點
+          } else if (prev.p1 !== null && prev.p2 !== null) {
+            return { pathId: hId, p1: hIdx, p2: null }; // 已經有選好範圍，重新設定起點
+          } else if (prev.p1 !== null && prev.p2 === null) {
+            if (prev.p1 === hIdx) return { pathId: hId, p1: null, p2: null }; // 同個點點兩次，取消子範圍選取
+            return { ...prev, p2: hIdx }; // 設定終點
+          }
+          return prev;
+        });
+      } else {
+        // 點擊空白處，取消選取
+        setSelectedPathId(null);
+        setSelRange({ pathId: null, p1: null, p2: null });
+      }
     } else if (mode === "TRIM") {
       interactionRef.current.isDragging = true;
       interactionRef.current.trimPath = [rawPt];
@@ -1005,7 +1040,6 @@ const CncWorkspace = () => {
       if (hc) {
         saveState();
         setPaths((prev) => {
-          // 🔥 修正：使用深拷貝確保狀態安全更新，並處理起點/終點同步
           const n = JSON.parse(JSON.stringify(prev));
           const pts = n[hc.pIdx].points;
           pts[hc.ptIdx][chamferType] = chamferVal;
@@ -1146,17 +1180,24 @@ const CncWorkspace = () => {
 
     if (mode === "SELECT") {
       let minD = 20 / cameraRef.current.zoom,
-        foundId = null;
+        foundId = null,
+        foundPtIdx = null;
       paths.forEach((p) => {
-        if (p.points)
-          p.points.forEach((pt) => {
-            if (pt && Math.hypot(rawPt.x - pt.x, rawPt.y - pt.y) < minD)
+        if (p.points) {
+          p.points.forEach((pt, idx) => {
+            if (pt && Math.hypot(rawPt.x - pt.x, rawPt.y - pt.y) < minD) {
+              minD = Math.hypot(rawPt.x - pt.x, rawPt.y - pt.y);
               foundId = p.id;
+              foundPtIdx = idx; // 🔥 記憶被 Hover 到的點 Index
+            }
           });
+        }
       });
       interactionRef.current.hoveredPathId = foundId;
+      interactionRef.current.hoveredPtIdx = foundPtIdx;
     } else {
       interactionRef.current.hoveredPathId = null;
+      interactionRef.current.hoveredPtIdx = null;
     }
 
     if (mode === "CHAMFER") {
@@ -1165,7 +1206,6 @@ const CncWorkspace = () => {
       paths.forEach((p, pIdx) => {
         if (!p.points) return;
         
-        // 🔥 修正：允許選中封閉路徑的起點/終點
         const isClosed = p.points.length > 2 && Math.hypot(p.points[0].x - p.points[p.points.length-1].x, p.points[0].y - p.points[p.points.length-1].y) < 0.001;
         
         for (let i = 0; i < p.points.length; i++) {
@@ -1385,6 +1425,13 @@ const CncWorkspace = () => {
               ✋ 平移
             </button>
           </div>
+          
+          {/* 🔥 增加介面文字引導 */}
+          {mode === "SELECT" && (
+            <span style={{ color: "#ffeb3b", fontSize: "12px", alignSelf: "center", marginLeft: "5px" }}>
+               💡 點擊兩端點定義範圍，點空白處取消
+            </span>
+          )}
 
           <div
             style={{
@@ -1652,6 +1699,8 @@ const CncWorkspace = () => {
             onClick={() => {
               saveState();
               setPaths([]);
+              setSelectedPathId(null);
+              setSelRange({ pathId: null, p1: null, p2: null });
             }}
             style={{
               background: "#6c757d",
